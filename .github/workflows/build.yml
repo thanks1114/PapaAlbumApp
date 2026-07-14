@@ -19,20 +19,25 @@ jobs:
       run: |
         pip install buildozer cython
 
-    # --- 【重要】ここが修正ポイントです ---
-    # Buildozerを実行する前に、Android SDKのライセンスに自動で同意します。
+    # --- 【改善版】Buildozer用とシステム用の両方にライセンス同意を適用 ---
     - name: Accept Android SDK Licenses
       run: |
-        mkdir -p ~/.android
-        touch ~/.android/repositories.cfg
-        # BuildozerがダウンロードするSDKマネージャーを叩いて自動で「yes」を流し込みます
-        yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+        # 1. システム標準のSDKマネージャーで同意
+        if [ -n "$ANDROID_HOME" ]; then
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          yes | sdkmanager --licenses || true
+        fi
+        
+        # 2. Buildozerが自動作成するSDKディレクトリに直接ライセンス合意ファイルをコピー・作成
+        mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
+        # 主要なライセンス（SDK, Preview, SDK Supportなど）のハッシュ値を直接書き込んで合意済みにします
+        echo -e "\n89ab2ddd8d477d506bb51ca248315222b49ff45a\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c24de1a812cf475b6eb9d4f4002e7dd9\nd56f5187479451eabf01fb7431b34d65b2d07dd8\ne9ac30531ff8ecc33d115494cae51ffb0fc08cb0\n2714b11687f312cd0266164d4ee4d22970a0d939" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+        echo -e "\n849ac24de157199418e30573bab4c9c91346d8abd" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license
 
     - name: Build APK
       run: |
         buildozer android debug
 
-    # --- 【便利機能】ビルドされたAPKをGitHubからダウンロードできるようにします ---
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
