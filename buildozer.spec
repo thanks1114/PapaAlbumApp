@@ -21,7 +21,7 @@ android.api = 33
 android.minapi = 21
 
 # Java
-android.sdk = 28
+android.sdk = 33
 android.ndk = 25b
 android.build_tools = 33.0.2
 android.gradle_dependencies = com.arthenica:ffmpeg-kit-full:5.1
