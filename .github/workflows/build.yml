@@ -8,18 +8,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # git の shallow clone 問題を回避
 
     - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y python3 python3-pip python3-setuptools git zip openjdk-11-jdk
-
-    - name: Cache buildozer
-      uses: actions/cache@v3
-      with:
-        path: ~/.buildozer
-        key: buildozer-cache
 
     - name: Install buildozer
       run: |
