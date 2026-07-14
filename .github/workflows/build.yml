@@ -20,12 +20,15 @@ jobs:
 
     - name: Install Android SDK manually
       run: |
-        mkdir -p $HOME/android-sdk
-        cd $HOME/android-sdk
-        wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
-        unzip cmdline-tools.zip
-        mkdir -p cmdline-tools/latest
-        mv cmdline-tools/* cmdline-tools/latest/
+        mkdir -p $HOME/android-sdk/cmdline-tools
+        cd $HOME/android-sdk/cmdline-tools
+
+        wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O tools.zip
+        unzip tools.zip -d temp
+
+        # 正しい構造にする
+        mkdir -p latest
+        mv temp/* latest/
 
         yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
         $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
@@ -33,7 +36,6 @@ jobs:
     - name: Set environment variables
       run: |
         echo "export ANDROIDSDK=$HOME/android-sdk" >> $GITHUB_ENV
-        echo "export ANDROIDNDK=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
         echo "export PATH=$HOME/android-sdk/platform-tools:$HOME/android-sdk/build-tools/33.0.2:$PATH" >> $GITHUB_ENV
 
     - name: Install buildozer
