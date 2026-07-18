@@ -8,50 +8,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y python3 python3-pip python3-setuptools git zip openjdk-17-jdk unzip wget
+        sudo apt install -y python3 python3-pip python3-setuptools git zip openjdk-11-jdk wget unzip
+
+    - name: Install Android SDK manually (build-tools 33.0.2)
+      run: |
+        mkdir -p $HOME/android-sdk/cmdline-tools
+        cd $HOME/android-sdk/cmdline-tools
+
+        wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O tools.zip
+        unzip tools.zip
+
+        # ZIP の中身は cmdline-tools/ なので、それを latest/ に移動
+        mv cmdline-tools latest
+
+        yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+        $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
     - name: Install buildozer
       run: |
+        pip install --upgrade pip
         pip install buildozer cython
 
-    # --- 【重要】古いsdkmanagerのパスエラーを回避するための事前セットアップ ---
-    - name: Setup Android SDK and Accept Licenses
+    - name: Force Buildozer to use our SDK (overwrite internal SDK)
       run: |
-        # 1. Buildozer用のSDK配置フォルダを作成
-        mkdir -p ~/.buildozer/android/platform/android-sdk/cmdline-tools
-        cd ~/.buildozer/android/platform/android-sdk/cmdline-tools
-        
-        # 2. Google公式から最新のcmdline-tools（sdkmanagerが含まれる）をダウンロード
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-        unzip -q cmdline-tools.zip
-        rm cmdline-tools.zip
-        
-        # 3. フォルダ構成をAndroid SDKの仕様（cmdline-tools/latest/...）に合わせる
-        mv cmdline-tools latest
-        
-        # 4. 古いパス（tools/bin/sdkmanager）を探すBuildozerを騙すためのシンボリックリンクを作成
-        mkdir -p ../tools/bin
-        ln -s ../../cmdline-tools/latest/bin/sdkmanager ../tools/bin/sdkmanager
-        
-        # 5. ライセンス同意ファイルを生成
-        mkdir -p ../licenses
-        echo -e "\n89ab2ddd8d477d506bb51ca248315222b49ff45a\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c24de1a812cf475b6eb9d4f4002e7dd9\nd56f5187479451eabf01fb7431b34d65b2d07dd8\ne9ac30531ff8ecc33d115494cae51ffb0fc08cb0\n2714b11687f312cd0266164d4ee4d22970a0d939" > ../licenses/android-sdk-license
-        echo -e "\n849ac24de157199418e30573bab4c9c91346d8abd" > ../licenses/android-sdk-preview-license
-        
-        # 6. すべてのライセンスを正式に同意
-        yes | ./latest/bin/sdkmanager --sdk_root=../ --licenses || true
+        mkdir -p ~/.buildozer/android/platform/
+        rm -rf ~/.buildozer/android/platform/android-sdk
+        cp -r $HOME/android-sdk ~/.buildozer/android/platform/android-sdk
 
     - name: Build APK
       run: |
         buildozer android debug
-
-    - name: Upload APK Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: PapaAlbumApp-Debug-APK
-        path: bin/*.apk
