@@ -23,6 +23,7 @@ jobs:
       run: |
         pip install buildozer cython
 
+    # --- 古いsdkmanagerのパスエラーを回避するための事前セットアップ ---
     - name: Setup Android SDK and Accept Licenses
       run: |
         mkdir -p ~/.buildozer/android/platform/android-sdk/cmdline-tools
@@ -38,16 +39,12 @@ jobs:
         echo -e "\n849ac24de157199418e30573bab4c9c91346d8abd" > ../licenses/android-sdk-preview-license
         yes | ./latest/bin/sdkmanager --sdk_root=../ --licenses || true
 
-    # --- 【追加】GitHub Actions内蔵のNDKへのシンボリックリンクを作成し、Buildozerに強制認識させる ---
-    - name: Link Pre-installed Android NDK
-      run: |
-        mkdir -p ~/.buildozer/android/platform
-        # GitHub Actions環境に最初からあるNDK（今回のログにあったr25bに合わせる）をBuildozerのパスにリンク
-        ln -s /usr/local/lib/android/sdk/ndk/25.2.9519653 ~/.buildozer/android/platform/android-ndk-r25b
+    # ※トラブルの原因となった「Link Pre-installed Android NDK」ステップは削除しました
 
     - name: Build APK
       run: |
-        buildozer android debug
+        # -v オプションを付与して、エラーの詳細ログを強制的に出力させます
+        buildozer -v android debug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
