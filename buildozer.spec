@@ -1,42 +1,60 @@
 [app]
 
+# (string) アプリのタイトル
 title = PapaAlbumApp
+
+# (string) パッケージ名 (小文字英数字、ドット区切り)
 package.name = papaalbumapp
-package.domain = org.yoyopc
+
+# (string) ドメイン名 (識別子用)
+package.domain = org.thanks1114
+
+# (string) ソースコードが含まれるディレクトリ (通常はメインスクリプトのある場所)
 source.dir = .
+
+# (list) 対象に含めるファイルの拡張子
 source.include_exts = py,png,jpg,kv,atlas
-version = 0.1
 
-entrypoint = main.py
+# (string) アプリのバージョン
+version = 1.0.0
 
-requirements = python3,kivy,pillow,piexif,androidstorage4kivy,ffmpeg-kit-python
+# -----------------------------------------------------------------------------
+# 【重要】依存ライブラリの指定
+# -----------------------------------------------------------------------------
+# Python標準、Kivy、Pillow (画像処理)、piexif (メタデータ保持) を指定
+requirements = python3, kivy, pillow, piexif
 
-android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
+# (list) サポートする画面の向き (縦固定にする場合は portrait)
+orientation = portrait
 
+# -----------------------------------------------------------------------------
+# Android 特有の設定
+# -----------------------------------------------------------------------------
+
+# (bool) フルスクリーン表示にするかどうか
+fullscreen = 1
+
+# 【重要】Android 13 (API 33) 以上をターゲットにしつつ、権限を網羅
 android.api = 33
 android.minapi = 21
 
-android.sdk = 33
-android.ndk = 25b
-# (必須) Android SDKのライセンスを自動的に受け入れる
-android.accept_sdk_license = True
-android.build_tools = 33.0.2
-android.gradle_dependencies = com.arthenica:ffmpeg-kit-full:5.1
+# 【重要】Androidのストレージ読み書き権限の要求
+# 共有フォルダ(DCIMやDownload)へのアクセスに必要です
+android.permissions = READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, MANAGE_EXTERNAL_STORAGE
 
-# recipes を使わないので空にする
-p4a.local_recipes =
+# (list) ビルド対象のアーキテクチャ (最近の端末は arm64-v8a が主流です)
+android.archs = arm64-v8a, armeabi-v7a
 
-icon.filename = icon.png
-orientation = portrait
+# -----------------------------------------------------------------------------
+# 【将来用】FFmpeg をバイナリとして同梱する場合の設定
+# -----------------------------------------------------------------------------
+# 将来的に Android 用の ffmpeg バイナリをプロジェクト配下の「binaries」フォルダ等に
+# 配置する場合、以下のように拡張子なしファイルや特定フォルダを含める設定を追加します。
+# source.include_patterns = binaries/*
 
-android.python_version = 3.10
-
-android.allow_backup = True
-android.enable_androidx = True
-
+[buildozer]
+# (int) ログの出力レベル (2 にすると詳細なデバッグログが出ます)
 log_level = 2
 
-android.release_keystore = release.keystore
-android.release_keystore_pass = password
-android.release_keyalias = key0
-android.release_keyalias_pass = password
+# (int) エラー時にビルドを即座に停止するかどうか
+warn_on_root = 1
