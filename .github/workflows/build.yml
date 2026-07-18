@@ -10,10 +10,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # 1. 依存パッケージのインストール（修正箇所）
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y python3 python3-pip python3-setuptools git zip openjdk-17-jdk unzip wget
+        sudo apt install -y python3 python3-pip python3-setuptools git zip openjdk-17-jdk unzip wget \
+                           libtool autoconf automake pkg-config libffi-dev
 
     - name: Install buildozer
       run: |
