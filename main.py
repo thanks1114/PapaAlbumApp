@@ -2,117 +2,103 @@ from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
-from kivy.properties import StringProperty
+from kivy.uix.filechooser import FileChooserListView
+from kivy.utils import platform
 
-from ffmpeg_kit import FFmpegKit
-from ffmpeg_kit import ReturnCode
-
-from androidstorage4kivy import SharedStorage
-from PIL import Image
-import piexif
 import os
 import pathlib
-from datetime import datetime
+from PIL import Image
+# ※事前に pip install piexif して、buildozer.spec の requirements に追加してください
+import piexif 
 
+class PapaAlbumButton(Button):
+    pass
 
-class RootWidget(BoxLayout):
-    log_text = StringProperty("ファイルを選択してください")
-
+class MainLayout(BoxLayout):
     def __init__(self, **kwargs):
-        super().__init__(orientation="vertical", **kwargs)
-
-        btn_select = Button(text="ファイルを選択", size_hint_y=None, height=60)
-        btn_select.bind(on_press=self.select_file)
-        self.add_widget(btn_select)
-
-        btn_compress = Button(text="圧縮する", size_hint_y=None, height=60)
-        btn_compress.bind(on_press=self.compress_file)
-        self.add_widget(btn_compress)
-
-        self.log_label = Label(text=self.log_text)
-        self.add_widget(self.log_label)
-
-        self.selected_file = None
-
-    def select_file(self, instance):
-        ss = SharedStorage()
-        uri = ss.open_file()
-        if uri:
-            self.selected_file = ss.copy_from_shared(uri)
-            self.log_text = f"選択: {self.selected_file}"
-            self.log_label.text = self.log_text
-
-    def compress_file(self, instance):
-        if not self.selected_file:
-            self.log_text = "ファイルが選択されていません"
-            self.log_label.text = self.log_text
-            return
-
-        path = self.selected_file
-        root, ext = os.path.splitext(path)
-        output_path = root + "_PapaAlbum" + ext
-
-        ext = ext.lower()
-
-        if ext in [".jpg", ".jpeg", ".png", ".webp"]:
-            self.compress_image(path, output_path)
-        elif ext in [".mp4", ".mov", ".mkv", ".webm"]:
-            self.compress_video(path, output_path)
-        else:
-            self.log_text = "対象外の拡張子です"
-            self.log_label.text = self.log_text
-
-    def compress_image(self, input_path, output_path):
-        img = Image.open(input_path)
-
-        exif_dict = None
-        if "exif" in img.info:
-            exif_dict = piexif.load(img.info["exif"])
-
-        w, h = img.size
-        long_side = 3000
-        scale = long_side / max(w, h)
-
-        if 0 < scale < 1:
-            img = img.resize((int(w * scale), int(h * scale)))
-
-        exif_bytes = b""
-        if exif_dict:
-            if "thumbnail" in exif_dict:
-                del exif_dict["thumbnail"]
-            exif_bytes = piexif.dump(exif_dict)
-
-        img.save(output_path, exif=exif_bytes)
-
-        self.log_text = f"画像圧縮成功: {output_path}"
-        self.log_label.text = self.log_text
-
-    def compress_video(self, input_path, output_path):
-        long_side = 3840
-        crf = 22
-
-        cmd = (
-            f"-y -i '{input_path}' "
-            f"-vf scale='if(gt(max(iw,ih),{long_side}),if(gt(iw,ih),{long_side},-1),iw)':"
-            f"'if(gt(max(iw,ih),{long_side}),if(gt(ih,iw),{long_side},-1),ih)' "
-            f"-c:v libsvtav1 -crf {crf} -preset 8 "
-            f"-c:a aac '{output_path}'"
+        super().__init__(**kwargs)
+        self.orientation = 'vertical'
+        
+        # 状態表示ラベル
+        self.status_label = Label(
+            text="処理するフォルダ（または画像）を選択してください", 
+            size_hint_y=0.1
         )
+        self.add_widget(self.status_label)
+        
+        # ファイル・フォルダセレクター (Androidの初期パスを考慮)
+        init_path = "/sdcard" if platform == "android" else os.path.expanduser("~")
+        self.file_chooser = FileChooserListView(path=init_path, dirselect=True)
+        self.add_widget(self.file_chooser)
+        
+        # 実行ボタン
+        self.run_btn = Button(text="選択したフォルダを圧縮開始", size_hint_y=0.15)
+        self.run_btn.bind(on_press=self.start_processing)
+        self.add_widget(self.run_btn)
 
-        session = FFmpegKit.execute(cmd)
-
-        if session.get_return_code().is_value_success():
-            self.log_text = f"動画圧縮成功: {output_path}"
+    def start_processing(self, instance):
+        selected = self.file_chooser.selection
+        if not selected:
+            self.status_label.text = "エラー: フォルダが選択されていません"
+            return
+            
+        target_path = selected[0]
+        if os.path.isdir(target_path):
+            self.status_label.text = "処理中..."
+            self.compress_folder_android(target_path)
         else:
-            self.log_text = "動画圧縮失敗"
+            self.status_label.text = "フォルダを選択してください"
 
-        self.log_label.text = self.log_text
-
+    def compress_folder_android(self, folder_path):
+        out_folder = folder_path + "_PapaAlbum"
+        os.makedirs(out_folder, exist_ok=True)
+        
+        # 簡易的に画像だけを処理する例
+        success_count = 0
+        for filename in os.listdir(folder_path):
+            input_path = os.path.join(folder_path, filename)
+            output_path = os.path.join(out_folder, filename)
+            
+            if not os.path.isfile(input_path):
+                continue
+                
+            ext = pathlib.Path(input_path).suffix.lower()
+            if ext in [".jpg", ".jpeg"]:
+                try:
+                    # タイムスタンプ取得
+                    timestamp = os.path.getmtime(input_path)
+                    
+                    # 画像リサイズ
+                    img = Image.open(input_path)
+                    img.thumbnail((3000, 3000)) # 長辺を最大3000に維持して縮小
+                    
+                    # Exifのコピー（piexifを使用）
+                    exif_dict = piexif.load(img.info.get("exif", b""))
+                    exif_bytes = piexif.dump(exif_dict)
+                    
+                    # 保存
+                    img.save(output_path, "jpeg", exif=exif_bytes)
+                    
+                    # タイムスタンプの復元
+                    os.utime(output_path, (timestamp, timestamp))
+                    success_count += 1
+                except Exception as e:
+                    print(f"Error {filename}: {e}")
+                    
+        self.status_label.text = f"完了！ {success_count}枚の画像を圧縮しました\n保存先: {out_folder}"
 
 class PapaAlbumApp(App):
     def build(self):
-        return RootWidget()
-
+        return MainLayout()
+    
+    def on_start(self):
+        # Android環境の場合、ストレージ読み書き権限をリクエスト
+        if platform == "android":
+            from android.permissions import request_permissions, Permission
+            request_permissions([
+                Permission.READ_EXTERNAL_STORAGE, 
+                Permission.WRITE_EXTERNAL_STORAGE
+            ])
 
 if __name__ == "__main__":
     PapaAlbumApp().run()
