@@ -14,10 +14,10 @@ jobs:
       run: |
         sudo apt update
         sudo apt install -y python3 python3-pip python3-setuptools git zip openjdk-17-jdk unzip wget \
-                           libtool autoconf automake pkg-config libffi-dev \
-                           build-essential libssl-dev libsqlite3-dev bzip2 libbz2-dev \
-                           liblzma-dev libgdbm-dev libgdbm-compat-dev libreadline-dev \
-                           uuid-dev gawk libncurses5-dev libncursesw5-dev
+                            libtool autoconf automake pkg-config libffi-dev \
+                            build-essential libssl-dev libsqlite3-dev bzip2 libbz2-dev \
+                            liblzma-dev libgdbm-dev libgdbm-compat-dev libreadline-dev \
+                            uuid-dev gawk libncurses5-dev libncursesw5-dev
 
     - name: Install buildozer
       run: |
@@ -42,6 +42,9 @@ jobs:
     # ※トラブルの原因となった「Link Pre-installed Android NDK」ステップは削除しました
 
     - name: Build APK
+      env:
+        # APTで入れたJava 17のパスを明示的に指定して環境変数を上書きします
+        JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
       run: |
         # -v オプションを付与して、エラーの詳細ログを強制的に出力させます
         buildozer -v android debug
