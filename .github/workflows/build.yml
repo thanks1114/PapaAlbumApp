@@ -5,17 +5,21 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (24.04) から 22.04 に変更して互換性を確保
+    runs-on: ubuntu-22.04
 
     steps:
     - uses: actions/checkout@v4
 
-    # 1. 依存パッケージのインストール（修正箇所）
     - name: Install dependencies
       run: |
         sudo apt update
+        # PythonのビルドとBuildozerに必要なパッケージを完全に網羅
         sudo apt install -y python3 python3-pip python3-setuptools git zip openjdk-17-jdk unzip wget \
-                           libtool autoconf automake pkg-config libffi-dev
+                           libtool autoconf automake pkg-config libffi-dev \
+                           build-essential libssl-dev libsqlite3-dev bzip2 libbz2-dev \
+                           liblzma-dev libgdbm-dev libgdbm-compat-dev libreadline-dev \
+                           uuid-dev gawk libncurses5-dev libncursesw5-dev
 
     - name: Install buildozer
       run: |
