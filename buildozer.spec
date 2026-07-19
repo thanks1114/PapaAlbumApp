@@ -35,7 +35,7 @@ version = 0.1
 
 # (list) アプリケーションの依存要件（ライブラリ）
 # 処理に必要な kivy, pillow, piexif を明記しています
-requirements = python3,kivy,pillow,piexif,player
+requirements = python3,kivy,pillow,piexif,player,pyjnius,android
 
 # (str) 要件（requirements）用のカスタムソースフォルダ
 # p4a.local_recipes =
