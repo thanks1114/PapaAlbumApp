@@ -10,7 +10,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. 最初からJava 17をシステム全体にセットアップ
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
@@ -30,23 +29,42 @@ jobs:
       run: |
         pip install buildozer cython
 
+    # ================= キャッシュ設定の追加 =================
+    - name: Cache Buildozer global directory
+      uses: actions/cache@v4
+      with:
+        path: ~/.buildozer
+        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}
+        restore-keys: |
+          ${{ runner.os }}-buildozer-global-
+
+    - name: Cache Project Buildozer directory
+      uses: actions/cache@v4
+      with:
+        path: .buildozer
+        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}
+        restore-keys: |
+          ${{ runner.os }}-buildozer-local-
+    # =======================================================
+
     # --- 古いsdkmanagerのパスエラーを回避するための事前セットアップ ---
     - name: Setup Android SDK and Accept Licenses
       run: |
-        mkdir -p ~/.buildozer/android/platform/android-sdk/cmdline-tools
-        cd ~/.buildozer/android/platform/android-sdk/cmdline-tools
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-        unzip -q cmdline-tools.zip
-        rm cmdline-tools.zip
-        mv cmdline-tools latest
-        mkdir -p ../tools/bin
-        ln -s ../../cmdline-tools/latest/bin/sdkmanager ../tools/bin/sdkmanager
-        mkdir -p ../licenses
-        echo -e "\n89ab2ddd8d477d506bb51ca248315222b49ff45a\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c24de1a812cf475b6eb9d4f4002e7dd9\nd56f5187479451eabf01fb7431b34d65b2d07dd8\ne9ac30531ff8ecc33d115494cae51ffb0fc08cb0\n2714b11687f312cd0266164d4ee4d22970a0d939" > ../licenses/android-sdk-license
-        echo -e "\n849ac24de157199418e30573bab4c9c91346d8abd" > ../licenses/android-sdk-preview-license
-        
-        # これでJava 17を使って正常に実行されます
-        yes | ./latest/bin/sdkmanager --sdk_root=/home/runner/.buildozer/android/platform/android-sdk --licenses
+        # キャッシュが存在する場合は作成をスキップ
+        if [ ! -d "~/.buildozer/android/platform/android-sdk/cmdline-tools" ]; then
+          mkdir -p ~/.buildozer/android/platform/android-sdk/cmdline-tools
+          cd ~/.buildozer/android/platform/android-sdk/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip
+          rm cmdline-tools.zip
+          mv cmdline-tools latest
+          mkdir -p ../tools/bin
+          ln -s ../../cmdline-tools/latest/bin/sdkmanager ../tools/bin/sdkmanager
+          mkdir -p ../licenses
+          echo -e "\n89ab2ddd8d477d506bb51ca248315222b49ff45a\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c24de1a812cf475b6eb9d4f4002e7dd9\nd56f5187479451eabf01fb7431b34d65b2d07dd8\ne9ac30531ff8ecc33d115494cae51ffb0fc08cb0\n2714b11687f312cd0266164d4ee4d22970a0d939" > ../licenses/android-sdk-license
+          echo -e "\n849ac24de157199418e30573bab4c9c91346d8abd" > ../licenses/android-sdk-preview-license
+          yes | ./latest/bin/sdkmanager --sdk_root=/home/runner/.buildozer/android/platform/android-sdk --licenses
+        fi
 
     - name: Build APK
       run: |
