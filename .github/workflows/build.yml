@@ -10,6 +10,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # ================= [追加] Issueからアイコン画像を自動ダウンロード =================
+    - name: Download App Icon from Issue
+      run: |
+        # ↓ここにIssueに添付されている画像のURL（https://github.com/.../assets/...）を貼り付けてください
+        ICON_URL="https://github.com/thanks1114/PapaAlbumApp/issues/1"
+        
+        # アイコンをダウンロードしてプロジェクトのルートに配置
+        wget -q -O icon.png "$ICON_URL"
+        echo "Icon downloaded successfully."
+    # =================================================================================
+
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
@@ -29,12 +40,12 @@ jobs:
       run: |
         pip install buildozer cython
 
-    # ================= キャッシュ設定 =================
+    # ================= キャッシュ設定（-v2を追加してplyer未検出バグを修正） =================
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
         path: ~/.buildozer
-        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}
+        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v2
         restore-keys: |
           ${{ runner.os }}-buildozer-global-
 
@@ -42,18 +53,16 @@ jobs:
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}
+        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v2
         restore-keys: |
           ${{ runner.os }}-buildozer-local-
-    # =======================================================
+    # ========================================================================================
 
     # --- 古いsdkmanagerのパスエラーを回避するための事前セットアップ ---
     - name: Setup Android SDK and Accept Licenses
       run: |
-        # チルダを展開させるため $HOME に置き換え
         SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
         
-        # 既にリンクが存在する場合は、衝突を防ぐために事前に削除
         if [ -L "$SDK_DIR/tools/bin/sdkmanager" ]; then
           rm -f "$SDK_DIR/tools/bin/sdkmanager"
         fi
@@ -73,7 +82,6 @@ jobs:
           echo -e "\n849ac24de157199418e30573bab4c9c91346d8abd" > ../licenses/android-sdk-preview-license
           yes | ./latest/bin/sdkmanager --sdk_root=$HOME/.buildozer/android/platform/android-sdk --licenses
         else
-          # キャッシュから復元された場合でも、念のためリンクを再生成して安全性を担保
           mkdir -p "$SDK_DIR/tools/bin"
           ln -sf ../../cmdline-tools/latest/bin/sdkmanager "$SDK_DIR/tools/bin/sdkmanager"
         fi
