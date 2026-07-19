@@ -168,18 +168,16 @@ class MainLayout(BoxLayout):
         video_count = 0
         total_files = len(file_paths)
         
+        # 基本となる保存ルートの設定
         if platform == "android":
-            out_folder = "/sdcard/Download/PapaAlbum_Outputs"
+            try:
+                base_dir = storagepath.get_primary_external_storage_dir()
+                download_dir = os.path.join(base_dir, "Download")
+            except Exception:
+                download_dir = App.get_running_app().user_data_dir
         else:
-            out_folder = "./PapaAlbum_Outputs"
-            
-        try:
-            os.makedirs(out_folder, exist_ok=True)
-        except Exception as e:
-            Clock.schedule_once(lambda dt: self.update_status(f"フォルダ作成エラー: {str(e)}"))
-            Clock.schedule_once(lambda dt: self.enable_button())
-            return
-        
+            download_dir = "./"
+
         for index, input_path in enumerate(file_paths, start=1):
             Clock.schedule_once(
                 lambda dt, idx=index: self.update_status(f"パパ頑張り中... ({idx} / {total_files})")
@@ -188,8 +186,25 @@ class MainLayout(BoxLayout):
             if not input_path or os.path.isdir(input_path):
                 continue
                 
-            ext = pathlib.Path(input_path).suffix.lower()
-            filename = os.path.basename(input_path)
+            # --- 【新仕様】元ファイルのフォルダ名を取得して「_PapaAlbum」を付与 ---
+            try:
+                input_path_obj = pathlib.Path(input_path)
+                parent_folder_name = input_path_obj.parent.name # 例: "Camera" や "Screenshots"
+                
+                # 元フォルダ名が取得できないか空の場合はデフォルト名にするセーフティ
+                if not parent_folder_name:
+                    parent_folder_name = "Media"
+                    
+                # 出力先フォルダの決定（例: Download/Camera_PapaAlbum）
+                out_folder = os.path.join(download_dir, f"{parent_folder_name}_PapaAlbum")
+                os.makedirs(out_folder, exist_ok=True)
+            except Exception as e:
+                print(f"Folder creation error for {input_path}: {e}")
+                continue
+            # -------------------------------------------------------------------
+                
+            ext = input_path_obj.suffix.lower()
+            filename = input_path_obj.name
             output_path = os.path.join(out_folder, filename)
             
             try:
@@ -219,12 +234,14 @@ class MainLayout(BoxLayout):
                     
         total = img_count + video_count
         if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n\n保存先:\n{out_folder}"
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n\n保存先:\nAndroid内の「ダウンロード」フォルダ配下"
         else:
             result_text = "ファイルの処理に失敗しました。"
             
         Clock.schedule_once(lambda dt: self.update_status(result_text))
         Clock.schedule_once(lambda dt: self.enable_button())
+        
+    
 
     def update_status(self, text):
         self.status_label.text = text
