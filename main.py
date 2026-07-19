@@ -4,22 +4,22 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.utils import platform
 from kivy.core.text import LabelBase
+from kivy.clock import Clock # UI更新用に追加
 
 import os
 import pathlib
 import shutil
+import threading # 別スレッド実行用に追加
 from PIL import Image
 import piexif 
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
 if platform == "android":
-    # Androidシステムに内蔵されている日本語フォントのパス
     font_path = "/system/fonts/NotoSansCJK-Regular.ttc"
     if not os.path.exists(font_path):
         font_path = "/system/fonts/DroidSansFallback.ttf"
 else:
-    # PC環境（Windows/Mac）でテストする場合は、同じフォルダにフォントファイルを置いて指定してください
     font_path = "NotoSansJP-Regular.ttf"
 
 if os.path.exists(font_path):
@@ -32,7 +32,7 @@ class MainLayout(BoxLayout):
         super().__init__(**kwargs)
         self.orientation = 'vertical'
         
-        # 状態表示ラベル
+        # 状態・進捗表示ラベル
         self.status_label = Label(
             text="下のボタンから画像・動画を選択してください", 
             size_hint_y=0.3,
@@ -53,7 +53,6 @@ class MainLayout(BoxLayout):
         if platform == "android":
             try:
                 from plyer import filechooser
-                # 起動失敗を防ぐため、最も汎用的な形式でメディアピッカーを呼び出す
                 filechooser.open_file(
                     multiple=True,
                     filters=[("Media", "*/*")], 
@@ -69,14 +68,23 @@ class MainLayout(BoxLayout):
             self.status_label.text = "キャンセルされました"
             return
             
-        self.status_label.text = "処理中..."
-        self.compress_multiple_files(selection)
+        # ボタンを連打されないように無効化（任意）
+        self.select_btn.disabled = True
+        self.status_label.text = f"準備中... (0 / {len(selection)})"
+        
+        # 画面フリーズを防ぐため、重い処理を別スレッドで開始
+        threading.Thread(
+            target=self.compress_multiple_files_thread, 
+            args=(selection,), 
+            daemon=True
+        ).start()
 
-    def compress_multiple_files(self, file_paths):
+    # 別スレッドで実行される処理
+    def compress_multiple_files_thread(self, file_paths):
         img_count = 0
         video_count = 0
+        total_files = len(file_paths)
         
-        # Androidでの安全な共通保存先（Downloadフォルダ）
         if platform == "android":
             out_folder = "/sdcard/Download/PapaAlbum_Outputs"
         else:
@@ -85,10 +93,18 @@ class MainLayout(BoxLayout):
         try:
             os.makedirs(out_folder, exist_ok=True)
         except Exception as e:
-            self.status_label.text = f"フォルダ作成エラー: {str(e)}"
+            # メインスレッドのUIを更新
+            Clock.schedule_once(lambda dt: self.update_status(f"フォルダ作成エラー: {str(e)}"))
+            Clock.schedule_once(lambda dt: self.enable_button())
             return
         
-        for input_path in file_paths:
+        # 1枚ずつ処理しながら進捗をカウント
+        for index, input_path in enumerate(file_paths, start=1):
+            # 進行状況を画面にリアルタイム反映 (例: "処理中... (3 / 10)")
+            Clock.schedule_once(
+                lambda dt, idx=index: self.update_status(f"処理中... ({idx} / {total_files})")
+            )
+            
             if not input_path or os.path.isdir(input_path):
                 continue
                 
@@ -97,29 +113,25 @@ class MainLayout(BoxLayout):
             output_path = os.path.join(out_folder, filename)
             
             try:
-                # 元ファイルのタイムスタンプを取得
                 timestamp = os.path.getmtime(input_path)
                 
-                # --- 画像処理（JPG/JPEG/PNG） ---
+                # --- 画像処理 ---
                 if ext in [".jpg", ".jpeg", ".png"]:
                     img = Image.open(input_path)
-                    img.thumbnail((3000, 3000)) # 長辺を最大3000に維持
+                    img.thumbnail((3000, 3000))
                     
                     if ext in [".jpg", ".jpeg"]:
-                        # Exif情報を取得してコピー
                         exif_dict = piexif.load(img.info.get("exif", b""))
                         exif_bytes = piexif.dump(exif_dict)
                         img.save(output_path, "jpeg", exif=exif_bytes)
                     else:
                         img.save(output_path)
                         
-                    # タイムスタンプ（撮影日等）を維持
                     os.utime(output_path, (timestamp, timestamp))
                     img_count += 1
                     
-                # --- 動画処理（MP4/MOV/M4V） ---
+                # --- 動画処理 ---
                 elif ext in [".mp4", ".mov", ".m4v"]:
-                    # 動画はコピーし、タイムスタンプのみ維持
                     shutil.copy2(input_path, output_path)
                     os.utime(output_path, (timestamp, timestamp))
                     video_count += 1
@@ -127,11 +139,23 @@ class MainLayout(BoxLayout):
             except Exception as e:
                 print(f"Error {input_path}: {e}")
                     
+        # すべての処理が完了した時の画面更新
         total = img_count + video_count
         if total > 0:
-            self.status_label.text = f"完了！ {img_count}枚の画像と{video_count}本の動画を処理しました。\n保存先: {out_folder}"
+            result_text = f"完了！ {img_count}枚の画像と{video_count}本の動画を処理しました。\n保存先: {out_folder}"
         else:
-            self.status_label.text = "ファイルの処理に失敗しました。対応形式をご確認ください。"
+            result_text = "ファイルの処理に失敗しました。"
+            
+        Clock.schedule_once(lambda dt: self.update_status(result_text))
+        Clock.schedule_once(lambda dt: self.enable_button())
+
+    # メインスレッドで安全に文字書き換えを行うための関数
+    def update_status(self, text):
+        self.status_label.text = text
+
+    # メインスレッドで安全にボタンを再有効化するための関数
+    def enable_button(self):
+        self.select_btn.disabled = False
 
 class PapaAlbumApp(App):
     def build(self):
