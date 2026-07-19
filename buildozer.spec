@@ -13,7 +13,7 @@ package.domain = org.thanks1114
 source.dir = .
 
 # (list) 含めるファイルの拡張子（空にするとすべてのファイルが含まれます）
-source.include_exts = py,png,jpg,kv,atlas
+source.include_exts = py,png,jpg,kv,atlas,ttf,ttc
 
 # (list) パターンマッチングを使用した含めるファイルのリスト
 #source.include_patterns = assets/*,images/*.png
@@ -48,6 +48,7 @@ requirements = python3,kivy,pillow,piexif,player,pyjnius,android
 
 # (list) アプリケーションのアイコンファイル名
 #icon.filename = %(source.dir)s/data/icon.png
+icon.filename = icon.png
 
 # (str) サポートする画面の向き (landscape, sensorLandscape, portrait, all のいずれか)
 orientation = portrait
