@@ -308,7 +308,7 @@ class PapaAlbumApp(App):
 
         popup = Popup(
             title="ご利用規約・免責事項",
-            font_name=FONT_NAME,
+            title_font=FONT_NAME,
             content=content,
             size_hint=(0.9, 0.9),
             auto_dismiss=False # 同意するまで閉じられないようにする
