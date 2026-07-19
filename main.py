@@ -2,7 +2,6 @@ from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
-from kivy.uix.filechooser import FileChooserListView
 from kivy.utils import platform
 from kivy.core.text import LabelBase
 
@@ -18,7 +17,7 @@ if platform == "android":
     if not os.path.exists(font_path):
         font_path = "/system/fonts/DroidSansFallback.ttf"
 else:
-    font_path = "NotoSansJP-Regular.ttf" # ←PCテスト時はお手持ちのフォント名に合わせてください
+    font_path = "NotoSansJP-Regular.ttf"
 
 if os.path.exists(font_path):
     LabelBase.register(name=FONT_NAME, fn_regular=font_path)
@@ -32,98 +31,93 @@ class MainLayout(BoxLayout):
         
         # 状態表示ラベル
         self.status_label = Label(
-            text="処理する画像ファイルを複数選択してください", 
-            size_hint_y=0.1,
+            text="下のボタンから画像を選択してください", 
+            size_hint_y=0.3,
             font_name=FONT_NAME
         )
         self.add_widget(self.status_label)
         
-        # ファイルセレクター (複数ファイル選択対応)
-        init_path = "/sdcard" if platform == "android" else os.path.expanduser("~")
-        self.file_chooser = FileChooserListView(
-            path=init_path, 
-            multiselect=True,
-            dirselect=False
-        )
-        self.add_widget(self.file_chooser)
-        
-        # 実行ボタン
-        self.run_btn = Button(
-            text="選択したファイルを一括圧縮開始", 
-            size_hint_y=0.15,
+        # 画像選択＆実行ボタン
+        self.select_btn = Button(
+            text="画像を選択して圧縮（複数可）", 
+            size_hint_y=0.7,
             font_name=FONT_NAME
         )
-        self.run_btn.bind(on_press=self.start_processing)
-        self.add_widget(self.run_btn)
+        self.select_btn.bind(on_press=self.open_file_picker)
+        self.add_widget(self.select_btn)
 
-    def start_processing(self, instance):
-        selected_files = self.file_chooser.selection
-        if not selected_files:
-            self.status_label.text = "エラー: ファイルが選択されていません"
+    def open_file_picker(self, instance):
+        if platform == "android":
+            from plyer import filechooser
+            # Androidネイティブのギャラリー/ファイル選択画面を呼び出す
+            filechooser.open_file(
+                multiple=True,
+                on_selection=self.on_file_selected
+            )
+        else:
+            # PC環境でのテスト用（ダミー表示またはPC用ダイアログ）
+            self.status_label.text = "PC環境では Plyer のファイルピッカーが動作しません"
+
+    def on_file_selected(self, selection):
+        # 選択がキャンセルされた場合や空の場合
+        if not selection:
+            self.status_label.text = "キャンセルされました"
             return
             
         self.status_label.text = "処理中..."
-        self.compress_multiple_files(selected_files)
+        self.compress_multiple_files(selection)
 
     def compress_multiple_files(self, file_paths):
         success_count = 0
-        processed_folders = set() # 作成したフォルダを記録するセット
         
         for input_path in file_paths:
-            if os.path.isdir(input_path):
+            # Androidのピッカーから渡される特殊なパスのチェック
+            if not input_path or os.path.isdir(input_path):
                 continue
                 
             ext = pathlib.Path(input_path).suffix.lower()
-            if ext in [".jpg", ".jpeg"]:
-                try:
-                    # 元ファイルがあるフォルダのパスとファイル名を取得
-                    parent_dir = os.path.dirname(input_path)
-                    filename = os.path.basename(input_path)
-                    
-                    # 元フォルダ名に「_PapaAlbum」を付与した新しいフォルダパスを作成
+            # ピッカーによっては拡張子が取得できない場合があるため、画像として処理を試行
+            try:
+                parent_dir = os.path.dirname(input_path)
+                filename = os.path.basename(input_path)
+                
+                # Android 10以降の共有ストレージ書き込み制限を考慮し、
+                # アプリのプライベートキャッシュ領域または特定のパブリックディレクトリに保存
+                if platform == "android":
+                    # Androidの場合は、安全に書き込める「Download」フォルダなどを指定
+                    out_folder = "/sdcard/Download/PapaAlbum_Outputs"
+                else:
                     out_folder = parent_dir + "_PapaAlbum"
                     
-                    # まだ作成していないフォルダなら新規作成
-                    if out_folder not in processed_folders:
-                        os.makedirs(out_folder, exist_ok=True)
-                        processed_folders.add(out_folder)
-                    
-                    output_path = os.path.join(out_folder, filename)
-                    
-                    # タイムスタンプ取得
-                    timestamp = os.path.getmtime(input_path)
-                    
-                    # 画像リサイズ
-                    img = Image.open(input_path)
-                    img.thumbnail((3000, 3000))
-                    
-                    # Exifのコピー
-                    exif_dict = piexif.load(img.info.get("exif", b""))
-                    exif_bytes = piexif.dump(exif_dict)
-                    
-                    # 保存
-                    img.save(output_path, "jpeg", exif=exif_bytes)
-                    os.utime(output_path, (timestamp, timestamp))
-                    success_count += 1
-                except Exception as e:
-                    print(f"Error {input_path}: {e}")
+                os.makedirs(out_folder, exist_ok=True)
+                output_path = os.path.join(out_folder, filename)
+                
+                # タイムスタンプ取得
+                timestamp = os.path.getmtime(input_path)
+                
+                # 画像リサイズ
+                img = Image.open(input_path)
+                img.thumbnail((3000, 3000))
+                
+                # Exifのコピー
+                exif_dict = piexif.load(img.info.get("exif", b""))
+                exif_bytes = piexif.dump(exif_dict)
+                
+                # 保存
+                img.save(output_path, "jpeg", exif=exif_bytes)
+                os.utime(output_path, (timestamp, timestamp))
+                success_count += 1
+            except Exception as e:
+                print(f"Error {input_path}: {e}")
                     
         if success_count > 0:
-            self.status_label.text = f"完了！ {success_count}枚の画像を圧縮しました。\nそれぞれの元フォルダ名_PapaAlbumに格納しました。"
+            self.status_label.text = f"完了！ {success_count}枚の画像を圧縮しました。\n保存先: /sdcard/Download/PapaAlbum_Outputs"
         else:
-            self.status_label.text = "対応する画像ファイル（JPG/JPEG）が処理されませんでした"
+            self.status_label.text = "画像の処理に失敗しました。権限やファイル形式を確認してください。"
 
 class PapaAlbumApp(App):
     def build(self):
         return MainLayout()
-    
-    def on_start(self):
-        if platform == "android":
-            from android.permissions import request_permissions, Permission
-            request_permissions([
-                Permission.READ_EXTERNAL_STORAGE, 
-                Permission.WRITE_EXTERNAL_STORAGE
-            ])
 
 if __name__ == "__main__":
     PapaAlbumApp().run()
