@@ -33,7 +33,7 @@ else:
     FONT_NAME = None
 
 # --- カラーパレット定義（パパ・子ども向けの柔らかいアースカラー） ---
-COLOR_BG = (0.99, 0.98, 0.96, 1)        # 温かみのあるミルク色 (#FDFBF9)
+COLOR_BG = (0.99, 0.98, 0.96, 1)       # 温かみのあるミルク色 (#FDFBF9)
 COLOR_TEXT = (0.29, 0.22, 0.17, 1)      # 優しいダークブラウン (#4A382C)
 COLOR_PRIMARY = (0.90, 0.58, 0.39, 1)   # ソフトなテラコッタオレンジ (#E69467)
 COLOR_SECONDARY = (0.45, 0.62, 0.51, 1) # 落ち着いたリーフグリーン (#739E82)
@@ -66,18 +66,46 @@ class MainLayout(BoxLayout):
         self.status_label = Label(
             text="下のボタンから画像・動画を選択してください", 
             color=COLOR_TEXT,
-            size_hint_y=0.2,
+            size_hint_y=0.1,
             font_name=FONT_NAME,
             halign='center',
             valign='middle'
         )
         self.status_label.bind(size=self.status_label.setter('text_size'))
         self.add_widget(self.status_label)
+
+        # --- 【追加】スクロール可能なログ表示エリア ---
+        self.log_scroll = ScrollView(
+            size_hint_y=0.3,
+            bar_width=10,
+            scroll_type=[' Iraqi', 'bars']
+        )
+        # ログエリアの背景（薄いグレー）
+        with self.log_scroll.canvas.before:
+            Color(0.93, 0.91, 0.88, 1)
+            self.log_bg_rect = Rectangle(size=self.log_scroll.size, pos=self.log_scroll.pos)
+        self.log_scroll.bind(size=self._update_log_bg, pos=self._update_log_bg)
+
+        self.log_label = Label(
+            text="【アプリログ】\n",
+            font_name=FONT_NAME,
+            font_size='11sp',
+            color=(0.3, 0.3, 0.3, 1),
+            size_hint_y=None,
+            halign='left',
+            valign='top'
+        )
+        self.log_label.bind(size=lambda instance, value: setattr(instance, 'text_size', (value[0], None)))
+        self.log_label.bind(texture_size=lambda instance, value: setattr(instance, 'height', value[1]))
+        
+        self.log_scroll.add_widget(self.log_label)
+        self.add_widget(self.log_scroll)
+        # --------------------------------------------
         
         # 実行ボタン（メインアクション）
         self.select_btn = Button(
             text="画像・動画を選択して処理", 
-            size_hint_y=0.5,
+            size_hint_y=0.3,
             font_name=FONT_NAME,
             font_size='18sp',
             bold=True,
@@ -92,7 +120,7 @@ class MainLayout(BoxLayout):
         self.add_widget(self.select_btn)
         
         # フッターエリア（ストア必須項目：規約リンク・バージョン）
-        footer = BoxLayout(orientation='horizontal', size_hint_y=0.15, spacing=10)
+        footer = BoxLayout(orientation='horizontal', size_hint_y=0.1, spacing=10)
         
         self.policy_btn = Button(
             text="免責事項・プライバシーポリシー",
@@ -130,8 +158,19 @@ class MainLayout(BoxLayout):
         self.policy_rect.pos = instance.pos
         self.policy_rect.size = instance.size
 
+    def _update_log_bg(self, instance, value):
+        self.log_bg_rect.pos = instance.pos
+        self.log_bg_rect.size = instance.size
+
+    # ログを画面上のログエリアに追記する関数
+    def write_log(self, text):
+        def _append_text(dt):
+            self.log_label.text += f"{text}\n"
+            # 自動スクロール（常に最下部を表示）
+            self.log_scroll.scroll_y = 0
+        Clock.schedule_once(_append_text)
+
     def open_policy_url(self, instance):
-        # Google Playストア公開時に用意するプライバシーポリシーURLをここに記載します
         url = "https://thanks1114.org/papaalbum-policy" 
         webbrowser.open(url)
 
@@ -146,181 +185,23 @@ class MainLayout(BoxLayout):
                 )
             except Exception as e:
                 self.status_label.text = f"ピッカー起動エラー: {str(e)}"
+                self.write_log(f"[ERROR] ピッカー起動失敗: {str(e)}")
         else:
             self.status_label.text = "PC環境では Plyer のファイルピッカーが動作しません"
+            self.write_log("[INFO] PC環境のためファイルピッカーをスキップしました")
 
     def on_file_selected(self, selection):
         if not selection:
             self.status_label.text = "キャンセルされました"
+            self.write_log("[INFO] ファイル選択がキャンセルされました")
             return
             
         self.select_btn.disabled = True
         self.status_label.text = f"準備中... (0 / {len(selection)})"
+        self.write_log(f"[INFO] {len(selection)}個のファイルが選択されました。処理を開始します...")
         
         threading.Thread(
             target=self.compress_multiple_files_thread, 
             args=(selection,), 
             daemon=True
-        ).start()
-
-    def compress_multiple_files_thread(self, file_paths):
-        img_count = 0
-        video_count = 0
-        total_files = len(file_paths)
-        
-        # 基本となる保存ルートの設定
-        if platform == "android":
-            try:
-                base_dir = storagepath.get_primary_external_storage_dir()
-                download_dir = os.path.join(base_dir, "Download")
-            except Exception:
-                download_dir = App.get_running_app().user_data_dir
-        else:
-            download_dir = "./"
-
-        for index, input_path in enumerate(file_paths, start=1):
-            Clock.schedule_once(
-                lambda dt, idx=index: self.update_status(f"パパ頑張り中... ({idx} / {total_files})")
-            )
-            
-            if not input_path or os.path.isdir(input_path):
-                continue
-                
-            # --- 【新仕様】元ファイルのフォルダ名を取得して「_PapaAlbum」を付与 ---
-            try:
-                input_path_obj = pathlib.Path(input_path)
-                parent_folder_name = input_path_obj.parent.name # 例: "Camera" や "Screenshots"
-                
-                # 元フォルダ名が取得できないか空の場合はデフォルト名にするセーフティ
-                if not parent_folder_name:
-                    parent_folder_name = "Media"
-                    
-                # 出力先フォルダの決定（例: Download/Camera_PapaAlbum）
-                out_folder = os.path.join(download_dir, f"{parent_folder_name}_PapaAlbum")
-                os.makedirs(out_folder, exist_ok=True)
-            except Exception as e:
-                print(f"Folder creation error for {input_path}: {e}")
-                continue
-            # -------------------------------------------------------------------
-                
-            ext = input_path_obj.suffix.lower()
-            filename = input_path_obj.name
-            output_path = os.path.join(out_folder, filename)
-            
-            try:
-                timestamp = os.path.getmtime(input_path)
-                
-                if ext in [".jpg", ".jpeg", ".png"]:
-                    img = Image.open(input_path)
-                    img.thumbnail((3000, 3000))
-                    
-                    if ext in [".jpg", ".jpeg"]:
-                        exif_dict = piexif.load(img.info.get("exif", b""))
-                        exif_bytes = piexif.dump(exif_dict)
-                        img.save(output_path, "jpeg", exif=exif_bytes)
-                    else:
-                        img.save(output_path)
-                        
-                    os.utime(output_path, (timestamp, timestamp))
-                    img_count += 1
-                    
-                elif ext in [".mp4", ".mov", ".m4v"]:
-                    shutil.copy2(input_path, output_path)
-                    os.utime(output_path, (timestamp, timestamp))
-                    video_count += 1
-                    
-            except Exception as e:
-                print(f"Error {input_path}: {e}")
-                    
-        total = img_count + video_count
-        if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n\n保存先:\nAndroid内の「ダウンロード」フォルダ配下"
-        else:
-            result_text = "ファイルの処理に失敗しました。"
-            
-        Clock.schedule_once(lambda dt: self.update_status(result_text))
-        Clock.schedule_once(lambda dt: self.enable_button())
-        
-    
-
-    def update_status(self, text):
-        self.status_label.text = text
-
-    def enable_button(self):
-        self.select_btn.disabled = False
-
-class PapaAlbumApp(App):
-    def build(self):
-        return MainLayout()
-
-    def on_start(self):
-        # 初回起動時の免責事項同意チェック
-        self.store = JsonStore('papaalbum_settings.json')
-        if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
-            self.show_disclaimer_popup()
-
-    def show_disclaimer_popup(self):
-        # 免責事項の文言定義
-        disclaimer_text = (
-            "【重要・免責事項のご確認】\n\n"
-            "PapaAlbum（以下、本アプリ）をご利用いただきありがとうございます。\n"
-            "ストア公開および有料提供にあたり、以下の免責事項へ同意いただく必要があります。\n\n"
-            "1. データの保護について\n"
-            "本アプリは画像・動画の圧縮およびコピーを行いますが、万が一の不具合や予期せぬエラーにより、"
-            "元データまたは処理後のデータが破損・消失した場合であっても、開発者は一切の責任を負いません。 "
-            "重要な思い出のデータは、必ず事前に対象外のクラウドやPC等へバックアップを取った上でご利用ください。\n\n"
-            "2. 動作保証について\n"
-            "お使いの端末のOSバージョンや空き容量、ハードウェア特性によっては正常に動作しない場合があります。 "
-            "本アプリを利用したことによる直接的・間接的な損害（端末の不具合、利益の損失等）について、"
-            "開発者は一切の損害賠償責任を負わないものとします。\n\n"
-            "3. アップデートと仕様変更について\n"
-            "OSのアップデート等に伴い、予告なく仕様変更やサポートの終了を行う場合があります。\n\n"
-            "上記内容に同意いただける場合は、下記の「同意して利用を開始」を押してください。"
         )
-
-        # スクロール可能なテキストエリアを作成
-        content = BoxLayout(orientation='vertical', padding=10, spacing=10)
-        scroll = ScrollView(size_hint=(1, 0.8))
-        
-        text_label = Label(
-            text=disclaimer_text,
-            font_name=FONT_NAME,
-            font_size='13sp',
-            color=(0.95, 0.95, 0.95, 1),
-            size_hint_y=None,
-            halign='left',
-            valign='top'
-        )
-        text_label.bind(size=lambda instance, value: setattr(instance, 'text_size', (value[0], None)))
-        text_label.bind(texture_size=lambda instance, value: setattr(instance, 'height', value[1]))
-        
-        scroll.add_widget(text_label)
-        content.add_widget(scroll)
-
-        # 同意ボタン
-        agree_btn = Button(
-            text="同意して利用を開始",
-            font_name=FONT_NAME,
-            size_hint=(1, 0.2),
-            bold=True
-        )
-        content.add_widget(agree_btn)
-
-        popup = Popup(
-            title="ご利用規約・免責事項",
-            title_font=FONT_NAME,
-            content=content,
-            size_hint=(0.9, 0.9),
-            auto_dismiss=False # 同意するまで閉じられないようにする
-        )
-
-        def on_agree(instance):
-            # 同意フラグを内部ストレージへ保存
-            self.store.put('user_agreement', accepted=True)
-            popup.dismiss()
-
-        agree_btn.bind(on_press=on_agree)
-        popup.open()
-
-if __name__ == "__main__":
-    PapaAlbumApp().run()
