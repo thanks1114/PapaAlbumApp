@@ -25,11 +25,20 @@ if platform == "android":
     if not os.path.exists(font_path):
         font_path = "/system/fonts/DroidSansFallback.ttf"
 else:
+    # Windows環境用のフォント選定
     font_path = "NotoSansJP-Regular.ttf"
+    # ローカルになければ Windows 標準の MS ゴシックを安全なフォールバックとして使用
+    if not os.path.exists(font_path):
+        font_path = r"C:\Windows\Fonts\msgothic.ttc"
 
-if os.path.exists(font_path):
-    LabelBase.register(name=FONT_NAME, fn_regular=font_path)
-else:
+# フォント登録時のクラッシュを防ぐ安全対策
+try:
+    if os.path.exists(font_path):
+        LabelBase.register(name=FONT_NAME, fn_regular=font_path)
+    else:
+        FONT_NAME = None
+except Exception as e:
+    print(f"Font registration failed: {e}")
     FONT_NAME = None
 
 # --- カラーパレット定義（パパ・子ども向けの柔らかいアースカラー） ---
@@ -74,13 +83,12 @@ class MainLayout(BoxLayout):
         self.status_label.bind(size=self.status_label.setter('text_size'))
         self.add_widget(self.status_label)
 
-        # --- 【追加】スクロール可能なログ表示エリア ---
+        # --- スクロール可能なログ表示エリア ---
         self.log_scroll = ScrollView(
             size_hint_y=0.3,
             bar_width=10,
-            scroll_type=[' Iraqi', 'bars']
+            scroll_type=['bars']
         )
-        # ログエリアの背景（薄いグレー）
         with self.log_scroll.canvas.before:
             Color(0.93, 0.91, 0.88, 1)
             self.log_bg_rect = Rectangle(size=self.log_scroll.size, pos=self.log_scroll.pos)
@@ -100,16 +108,15 @@ class MainLayout(BoxLayout):
         
         self.log_scroll.add_widget(self.log_label)
         self.add_widget(self.log_scroll)
-        # --------------------------------------------
         
-        # 実行ボタン（メインアクション）
+        # 実行ボタン
         self.select_btn = Button(
             text="画像・動画を選択して処理", 
             size_hint_y=0.3,
             font_name=FONT_NAME,
             font_size='18sp',
             bold=True,
-            background_color=(0, 0, 0, 0), # 標準スキンを消す
+            background_color=(0, 0, 0, 0),
             color=(1, 1, 1, 1)
         )
         with self.select_btn.canvas.before:
@@ -119,7 +126,7 @@ class MainLayout(BoxLayout):
         self.select_btn.bind(on_press=self.open_file_picker)
         self.add_widget(self.select_btn)
         
-        # フッターエリア（ストア必須項目：規約リンク・バージョン）
+        # フッターエリア
         footer = BoxLayout(orientation='horizontal', size_hint_y=0.1, spacing=10)
         
         self.policy_btn = Button(
@@ -162,11 +169,9 @@ class MainLayout(BoxLayout):
         self.log_bg_rect.pos = instance.pos
         self.log_bg_rect.size = instance.size
 
-    # ログを画面上のログエリアに追記する関数
     def write_log(self, text):
         def _append_text(dt):
             self.log_label.text += f"{text}\n"
-            # 自動スクロール（常に最下部を表示）
             self.log_scroll.scroll_y = 0
         Clock.schedule_once(_append_text)
 
@@ -187,8 +192,20 @@ class MainLayout(BoxLayout):
                 self.status_label.text = f"ピッカー起動エラー: {str(e)}"
                 self.write_log(f"[ERROR] ピッカー起動失敗: {str(e)}")
         else:
-            self.status_label.text = "PC環境では Plyer のファイルピッカーが動作しません"
-            self.write_log("[INFO] PC環境のためファイルピッカーをスキップしました")
+            # --- Windowsデバッグ用のダミー処理 ---
+            self.status_label.text = "Windows環境: テスト用ダミー処理を開始します"
+            self.write_log("[INFO] PC環境のため、カレントディレクトリの 'test.jpg' を模擬処理します")
+            
+            # デバッグ用にカレントディレクトリの適当なファイル構造をシミュレート
+            dummy_file = "test.jpg"
+            if not os.path.exists(dummy_file):
+                # テスト用のダミー画像ファイルを自動生成
+                img = Image.new('RGB', (100, 100), color = (73, 109, 137))
+                img.save(dummy_file)
+                self.write_log("[DEBUG] テスト用のダミー画像 'test.jpg' を作成しました")
+            
+            # ダミーファイルを選択したとして処理に回す
+            self.on_file_selected([os.path.abspath(dummy_file)])
 
     def on_file_selected(self, selection):
         if not selection:
@@ -200,8 +217,164 @@ class MainLayout(BoxLayout):
         self.status_label.text = f"準備中... (0 / {len(selection)})"
         self.write_log(f"[INFO] {len(selection)}個のファイルが選択されました。処理を開始します...")
         
+        # ★ 途切れていたスレッド呼び出しの閉じカッコと .start() を修正
         threading.Thread(
             target=self.compress_multiple_files_thread, 
             args=(selection,), 
             daemon=True
+        ).start()
+
+    def compress_multiple_files_thread(self, file_paths):
+        img_count = 0
+        video_count = 0
+        total_files = len(file_paths)
+        
+        if platform == "android":
+            try:
+                from android.storage import storagepath
+                base_dir = storagepath.get_primary_external_storage_dir()
+                download_dir = os.path.join(base_dir, "Download")
+            except Exception as e:
+                download_dir = App.get_running_app().user_data_dir
+                self.write_log(f"[WARN] Android外部ストレージ取得失敗、アプリ領域を使用: {e}")
+        else:
+            download_dir = "./"
+
+        for index, input_path in enumerate(file_paths, start=1):
+            Clock.schedule_once(
+                lambda dt, idx=index: self.update_status(f"パパ頑張り中... ({idx} / {total_files})")
+            )
+            
+            if not input_path or os.path.isdir(input_path):
+                continue
+                
+            try:
+                input_path_obj = pathlib.Path(input_path)
+                parent_folder_name = input_path_obj.parent.name
+                
+                if not parent_folder_name:
+                    parent_folder_name = "Media"
+                    
+                out_folder = os.path.join(download_dir, f"{parent_folder_name}_PapaAlbum")
+                os.makedirs(out_folder, exist_ok=True)
+            except Exception as e:
+                self.write_log(f"[ERROR] フォルダ作成失敗 {input_path}: {e}")
+                continue
+                
+            ext = input_path_obj.suffix.lower()
+            filename = input_path_obj.name
+            output_path = os.path.join(out_folder, filename)
+            
+            try:
+                timestamp = os.path.getmtime(input_path)
+                
+                if ext in [".jpg", ".jpeg", ".png"]:
+                    self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
+                    img = Image.open(input_path)
+                    img.thumbnail((3000, 3000))
+                    
+                    if ext in [".jpg", ".jpeg"]:
+                        try:
+                            exif_dict = piexif.load(img.info.get("exif", b""))
+                            exif_bytes = piexif.dump(exif_dict)
+                            img.save(output_path, "jpeg", exif=exif_bytes)
+                        except Exception:
+                            img.save(output_path, "jpeg")
+                    else:
+                        img.save(output_path)
+                        
+                    os.utime(output_path, (timestamp, timestamp))
+                    img_count += 1
+                    self.write_log(f"[SUCCESS] 保存完了: {output_path}")
+                    
+                elif ext in [".mp4", ".mov", ".m4v"]:
+                    self.write_log(f"[PROCESSING] 動画コピー中: {filename}")
+                    shutil.copy2(input_path, output_path)
+                    os.utime(output_path, (timestamp, timestamp))
+                    video_count += 1
+                    self.write_log(f"[SUCCESS] コピー完了: {output_path}")
+                    
+            except Exception as e:
+                self.write_log(f"[ERROR] 処理失敗 {filename}: {e}")
+                    
+        total = img_count + video_count
+        if total > 0:
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！"
+        else:
+            result_text = "ファイルの処理に失敗しました。"
+            
+        Clock.schedule_once(lambda dt: self.update_status(result_text))
+        Clock.schedule_once(lambda dt: self.enable_button())
+
+    def update_status(self, text):
+        self.status_label.text = text
+
+    def enable_button(self):
+        self.select_btn.disabled = False
+
+class PapaAlbumApp(App):
+    def build(self):
+        return MainLayout()
+
+    def on_start(self):
+        self.store = JsonStore('papaalbum_settings.json')
+        if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
+            self.show_disclaimer_popup()
+
+    def show_disclaimer_popup(self):
+        disclaimer_text = (
+            "【重要・免責事項のご確認】\n\n"
+            "PapaAlbum（以下、本アプリ）をご利用いただきありがとうございます。\n"
+            "ストア公開および有料提供にあたり、以下の免責事項へ同意いただく必要があります。\n\n"
+            "1. データの保護について\n"
+            "本アプリは画像・動画の圧縮およびコピーを行いますが、万が一の不具合や予期せぬエラーにより、"
+            "元データまたは処理後のデータが破損・消失した場合であっても、開発者は一切の責任を負いません。 "
+            "重要な思い出のデータは、必ず事前に対象外のクラウドやPC等へバックアップを取った上でご利用ください。\n\n"
+            "2. 動作保証について\n"
+            "お使い of 端末のOSバージョンや空き容量、ハードウェア特性によっては正常に動作しない場合があります。\n\n"
+            "上記内容に同意いただける場合は、下記の「同意して利用を開始」を押してください。"
         )
+
+        content = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        scroll = ScrollView(size_hint=(1, 0.8))
+        
+        text_label = Label(
+            text=disclaimer_text,
+            font_name=FONT_NAME,
+            font_size='13sp',
+            color=(0.95, 0.95, 0.95, 1),
+            size_hint_y=None,
+            halign='left',
+            valign='top'
+        )
+        text_label.bind(size=lambda instance, value: setattr(instance, 'text_size', (value[0], None)))
+        text_label.bind(texture_size=lambda instance, value: setattr(instance, 'height', value[1]))
+        
+        scroll.add_widget(text_label)
+        content.add_widget(scroll)
+
+        agree_btn = Button(
+            text="同意して利用を開始",
+            font_name=FONT_NAME,
+            size_hint=(1, 0.2),
+            bold=True
+        )
+        content.add_widget(agree_btn)
+
+        popup = Popup(
+            title="ご利用規約・免責事項",
+            title_font=FONT_NAME,
+            content=content,
+            size_hint=(0.9, 0.9),
+            auto_dismiss=False
+        )
+
+        def on_agree(instance):
+            self.store.put('user_agreement', accepted=True)
+            popup.dismiss()
+
+        agree_btn.bind(on_press=on_agree)
+        popup.open()
+
+if __name__ == "__main__":
+    PapaAlbumApp().run()
