@@ -17,7 +17,6 @@ import shutil
 import threading
 import webbrowser # ポリシーURL等を開く用
 from PIL import Image
-import piexif 
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
@@ -249,7 +248,7 @@ class MainLayout(BoxLayout):
         
         if platform == "android":
             try:
-                # ★ 廃止されたstoragepathに代わり、jnius経由でAndroidネイティブAPIからパブリックのDownloadパスを直接取得
+                # jnius経由でAndroidネイティブAPIからパブリックのDownloadパスを取得
                 from jnius import autoclass
                 Environment = autoclass('android.os.Environment')
                 download_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
@@ -290,14 +289,17 @@ class MainLayout(BoxLayout):
                 if ext in [".jpg", ".jpeg", ".png"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     img = Image.open(input_path)
+                    
+                    # ★【重要】元画像の生のExifデータをそのまま保持
+                    exif_data = img.info.get("exif")
+                    
                     img.thumbnail((3000, 3000))
                     
                     if ext in [".jpg", ".jpeg"]:
-                        try:
-                            exif_dict = piexif.load(img.info.get("exif", b""))
-                            exif_bytes = piexif.dump(exif_dict)
-                            img.save(output_path, "jpeg", exif=exif_bytes)
-                        except Exception:
+                        # 生のExifデータを破棄せずそのまま埋め込んで保存
+                        if exif_data:
+                            img.save(output_path, "jpeg", exif=exif_data)
+                        else:
                             img.save(output_path, "jpeg")
                     else:
                         img.save(output_path)
