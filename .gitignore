@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .kivy/
 papaalbum_settings.json
+NotoSansJP-Regular.ttf
