@@ -9,6 +9,7 @@ from kivy.core.text import LabelBase
 from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
 from kivy.storage.jsonstore import JsonStore # 同意フラグ保存用
+from kivy.core.clipboard import Clipboard    # クリップボード用
 
 import os
 import pathlib
@@ -60,7 +61,7 @@ class MainLayout(BoxLayout):
             self.bg_rect = Rectangle(size=self.size, pos=self.pos)
         self.bind(size=self._update_rect, pos=self._update_rect)
         
-        # アプリタイトル表示
+        # 1. アプリタイトル表示
         self.title_label = Label(
             text="PapaAlbum - パパの思い出写真圧縮",
             font_size='20sp',
@@ -71,7 +72,7 @@ class MainLayout(BoxLayout):
         )
         self.add_widget(self.title_label)
         
-        # 状態・進捗表示ラベル
+        # 2. 状態・進捗表示ラベル
         self.status_label = Label(
             text="下のボタンから画像・動画を選択してください", 
             color=COLOR_TEXT,
@@ -82,8 +83,25 @@ class MainLayout(BoxLayout):
         )
         self.status_label.bind(size=self.status_label.setter('text_size'))
         self.add_widget(self.status_label)
+        
+        # 3. 実行ボタン（メインアクションを上側に配置）
+        self.select_btn = Button(
+            text="画像・動画を選択して処理", 
+            size_hint_y=0.25,
+            font_name=FONT_NAME,
+            font_size='18sp',
+            bold=True,
+            background_color=(0, 0, 0, 0),
+            color=(1, 1, 1, 1)
+        )
+        with self.select_btn.canvas.before:
+            Color(*COLOR_PRIMARY)
+            self.btn_rect = Rectangle(size=self.select_btn.size, pos=self.select_btn.pos)
+        self.select_btn.bind(size=self._update_btn_rect, pos=self._update_btn_rect)
+        self.select_btn.bind(on_press=self.open_file_picker)
+        self.add_widget(self.select_btn)
 
-        # --- スクロール可能なログ表示エリア ---
+        # 4. スクロール可能なログ表示エリア（下部へ移動）
         self.log_scroll = ScrollView(
             size_hint_y=0.3,
             bar_width=10,
@@ -108,26 +126,21 @@ class MainLayout(BoxLayout):
         
         self.log_scroll.add_widget(self.log_label)
         self.add_widget(self.log_scroll)
-        
-        # 実行ボタン
-        self.select_btn = Button(
-            text="画像・動画を選択して処理", 
-            size_hint_y=0.3,
+
+        # 5. ログコピーボタン（ログエリアのすぐ下、フッターの直上に配置）
+        self.copy_log_btn = Button(
+            text="ログをクリップボードにコピー",
             font_name=FONT_NAME,
-            font_size='18sp',
-            bold=True,
-            background_color=(0, 0, 0, 0),
+            font_size='12sp',
+            size_hint_y=0.08,
+            background_color=(0.5, 0.5, 0.5, 1),
             color=(1, 1, 1, 1)
         )
-        with self.select_btn.canvas.before:
-            Color(*COLOR_PRIMARY)
-            self.btn_rect = Rectangle(size=self.select_btn.size, pos=self.select_btn.pos)
-        self.select_btn.bind(size=self._update_btn_rect, pos=self._update_btn_rect)
-        self.select_btn.bind(on_press=self.open_file_picker)
-        self.add_widget(self.select_btn)
+        self.copy_log_btn.bind(on_press=self.copy_log_to_clipboard)
+        self.add_widget(self.copy_log_btn)
         
-        # フッターエリア
-        footer = BoxLayout(orientation='horizontal', size_hint_y=0.1, spacing=10)
+        # 6. フッターエリア（最下部固定）
+        footer = BoxLayout(orientation='horizontal', size_hint_y=0.08, spacing=10)
         
         self.policy_btn = Button(
             text="免責事項・プライバシーポリシー",
@@ -175,6 +188,16 @@ class MainLayout(BoxLayout):
             self.log_scroll.scroll_y = 0
         Clock.schedule_once(_append_text)
 
+    def copy_log_to_clipboard(self, instance):
+        try:
+            Clipboard.copy(self.log_label.text)
+            old_status = self.status_label.text
+            self.status_label.text = "ログをコピーしました！"
+            Clock.schedule_once(lambda dt: setattr(self.status_label, 'text', old_status), 2)
+            self.write_log("[INFO] ログがクリップボードにコピーされました")
+        except Exception as e:
+            self.write_log(f"[ERROR] ログのコピーに失敗しました: {e}")
+
     def open_policy_url(self, instance):
         url = "https://thanks1114.org/papaalbum-policy" 
         webbrowser.open(url)
@@ -192,19 +215,15 @@ class MainLayout(BoxLayout):
                 self.status_label.text = f"ピッカー起動エラー: {str(e)}"
                 self.write_log(f"[ERROR] ピッカー起動失敗: {str(e)}")
         else:
-            # --- Windowsデバッグ用のダミー処理 ---
             self.status_label.text = "Windows環境: テスト用ダミー処理を開始します"
             self.write_log("[INFO] PC環境のため、カレントディレクトリの 'test.jpg' を模擬処理します")
             
-            # デバッグ用にカレントディレクトリの適当なファイル構造をシミュレート
             dummy_file = "test.jpg"
             if not os.path.exists(dummy_file):
-                # テスト用のダミー画像ファイルを自動生成
                 img = Image.new('RGB', (100, 100), color = (73, 109, 137))
                 img.save(dummy_file)
                 self.write_log("[DEBUG] テスト用のダミー画像 'test.jpg' を作成しました")
             
-            # ダミーファイルを選択したとして処理に回す
             self.on_file_selected([os.path.abspath(dummy_file)])
 
     def on_file_selected(self, selection):
@@ -217,7 +236,6 @@ class MainLayout(BoxLayout):
         self.status_label.text = f"準備中... (0 / {len(selection)})"
         self.write_log(f"[INFO] {len(selection)}個のファイルが選択されました。処理を開始します...")
         
-        # ★ 途切れていたスレッド呼び出しの閉じカッコと .start() を修正
         threading.Thread(
             target=self.compress_multiple_files_thread, 
             args=(selection,), 
@@ -331,7 +349,7 @@ class PapaAlbumApp(App):
             "元データまたは処理後のデータが破損・消失した場合であっても、開発者は一切の責任を負いません。 "
             "重要な思い出のデータは、必ず事前に対象外のクラウドやPC等へバックアップを取った上でご利用ください。\n\n"
             "2. 動作保証について\n"
-            "お使い of 端末のOSバージョンや空き容量、ハードウェア特性によっては正常に動作しない場合があります。\n\n"
+            "お使いの端末のOSバージョンや空き容量、ハードウェア特性によっては正常に動作しない場合があります。\n\n"
             "上記内容に同意いただける場合は、下記の「同意して利用を開始」を押してください。"
         )
 
