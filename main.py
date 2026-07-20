@@ -249,9 +249,10 @@ class MainLayout(BoxLayout):
         
         if platform == "android":
             try:
-                from android.storage import storagepath
-                base_dir = storagepath.get_primary_external_storage_dir()
-                download_dir = os.path.join(base_dir, "Download")
+                # ★ 廃止されたstoragepathに代わり、jnius経由でAndroidネイティブAPIからパブリックのDownloadパスを直接取得
+                from jnius import autoclass
+                Environment = autoclass('android.os.Environment')
+                download_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
             except Exception as e:
                 download_dir = App.get_running_app().user_data_dir
                 self.write_log(f"[WARN] Android外部ストレージ取得失敗、アプリ領域を使用: {e}")
@@ -339,7 +340,7 @@ class PapaAlbumApp(App):
         if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
             self.show_disclaimer_popup()
             
-        # ★【新設】Android起動時に外部ストレージの読み書き権限を要求
+        # Android起動時に外部ストレージの読み書き権限を要求
         if platform == "android":
             try:
                 from android.permissions import request_permissions, Permission
