@@ -338,6 +338,17 @@ class PapaAlbumApp(App):
         self.store = JsonStore('papaalbum_settings.json')
         if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
             self.show_disclaimer_popup()
+            
+        # ★【新設】Android起動時に外部ストレージの読み書き権限を要求
+        if platform == "android":
+            try:
+                from android.permissions import request_permissions, Permission
+                request_permissions([
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.WRITE_EXTERNAL_STORAGE
+                ])
+            except Exception as e:
+                print(f"Failed to request permissions: {e}")
 
     def show_disclaimer_popup(self):
         disclaimer_text = (
