@@ -32,30 +32,42 @@ jobs:
       run: |
         pip install --upgrade buildozer cython
 
+    # キャッシュキー更新（v10）
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
         path: ~/.buildozer
-        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v9
+        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v10
 
     - name: Cache Project Buildozer directory
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v9
+        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v10
 
-    # Android SDKライセンスの事前自動同意
-    - name: Accept Android SDK Licenses
+    # Android Command-line Tools (sdkmanager) の手動事前配置
+    - name: Setup Android Command-line Tools
       run: |
-        mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
-        printf "24333f8a63b6825ea9dd8273f838ec8f2b2e8183\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9dd8273f838ec8f2b2e8183" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
-        printf "84831b9402116e2678286b26632fe5c45734e646\n7a079231c9a1148677af54a7d330d500271c6946\n6010071077b0b34170746d824014251124970773" > ~/.buildozer/android/platform/android-sdk/licenses/android-googletv-license
-        printf "33b622e746b070b805566463863e4ec53f426d9c" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license
+        ANDROID_SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
+        mkdir -p "$ANDROID_SDK_DIR/cmdline-tools"
+        if [ ! -d "$ANDROID_SDK_DIR/cmdline-tools/latest" ]; then
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d "$ANDROID_SDK_DIR/cmdline-tools"
+          mv "$ANDROID_SDK_DIR/cmdline-tools/cmdline-tools" "$ANDROID_SDK_DIR/cmdline-tools/latest"
+          rm cmdline-tools.zip
+        fi
+        
+        # Buildozer(旧構造参照)用のシンボリックリンク作成
+        mkdir -p "$ANDROID_SDK_DIR/tools"
+        ln -sf "$ANDROID_SDK_DIR/cmdline-tools/latest/bin" "$ANDROID_SDK_DIR/tools/bin"
 
-    # ビルド実行（非対話モード指定）
+        # ライセンスの一括自動承諾
+        yes | "$ANDROID_SDK_DIR/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+    # ビルド実行
     - name: Build APK
       run: |
-        yes | buildozer android debug
+        buildozer -v android debug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
