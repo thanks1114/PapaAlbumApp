@@ -287,21 +287,14 @@ class MainLayout(BoxLayout):
             daemon=True
         ).start(), 0.2)
 
-    def compress_multiple_files_thread(self, file_paths):
+def compress_multiple_files_thread(self, file_paths):
         img_count = 0
         video_count = 0
         total_files = len(file_paths)
-        app = App.get_running_app()
         
-        # アプリ安全領域（内部/外部アプリ用ストレージ）のパスを設定
-        if platform == "android":
-            out_folder = os.path.join(app.user_data_dir, "PapaAlbum_Output")
-            cache_dir = app.user_data_dir
-        else:
-            out_folder = "./PapaAlbum_Output"
-            cache_dir = "./"
-
-        os.makedirs(out_folder, exist_ok=True)
+        # Pixel 10 Pro（Android）用のダウンロードフォルダおよびキャッシュ領域の設定
+        base_download_dir = "/storage/emulated/0/Download"
+        cache_dir = App.get_running_app().user_data_dir
 
         for index, raw_input_path in enumerate(file_paths, start=1):
             Clock.schedule_once(
@@ -315,11 +308,29 @@ class MainLayout(BoxLayout):
             working_path, original_filename = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
+                # 1. 元のフォルダ名を取得し「＜元フォルダ名＞_PapaAlbum」フォルダを作成
+                if raw_input_path.startswith("content://"):
+                    # content:// URI の場合は親フォルダ名の取得が困難なためフォールバック名を使用
+                    parent_folder_name = "Media"
+                else:
+                    parent_folder_name = pathlib.Path(raw_input_path).parent.name
+                
+                if not parent_folder_name or parent_folder_name in ["/", "\\", "."]:
+                    parent_folder_name = "Media"
+
+                out_folder_name = f"{parent_folder_name}_PapaAlbum"
+                target_out_dir = os.path.join(base_download_dir, out_folder_name)
+                os.makedirs(target_out_dir, exist_ok=True)
+
+                # 2. ファイル名と拡張子の決定
                 input_path_obj = pathlib.Path(working_path)
                 filename = original_filename if original_filename else input_path_obj.name
                 ext = pathlib.Path(filename).suffix.lower()
-                output_path = os.path.join(out_folder, filename)
                 
+                # 元のファイル名と同じ名前で出力パスを指定
+                output_path = os.path.join(target_out_dir, filename)
+                
+                # 3. 画像圧縮 / 動画コピー処理
                 if ext in [".jpg", ".jpeg", ".png"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
@@ -349,7 +360,7 @@ class MainLayout(BoxLayout):
             except Exception as e:
                 self.write_log(f"[ERROR] 処理失敗 {raw_input_path}: {e}")
             finally:
-                # content:// URI の一時コピーファイルを削除
+                # 一時生成したキャッシュファイルの削除
                 if raw_input_path.startswith("content://") and os.path.exists(working_path):
                     try:
                         os.remove(working_path)
@@ -358,13 +369,13 @@ class MainLayout(BoxLayout):
                     
         total = img_count + video_count
         if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n保存先: {out_folder}"
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\nダウンロードフォルダに保存しました。"
         else:
             result_text = "ファイルの処理に失敗しました。"
             
         Clock.schedule_once(lambda dt: self.update_status(result_text))
         Clock.schedule_once(lambda dt: self.enable_button())
-
+        
     def update_status(self, text):
         self.status_label.text = text
 
