@@ -8,14 +8,14 @@ from kivy.utils import platform
 from kivy.core.text import LabelBase
 from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
-from kivy.storage.jsonstore import JsonStore # 同意フラグ保存用
-from kivy.core.clipboard import Clipboard    # クリップボード用
+from kivy.storage.jsonstore import JsonStore
+from kivy.core.clipboard import Clipboard
 
 import os
 import pathlib
 import shutil
 import threading
-import webbrowser # ポリシーURL等を開く用
+import webbrowser
 from PIL import Image, ImageOps
 
 # --- 日本語フォントの登録 ---
@@ -26,8 +26,6 @@ if platform == "android":
         font_path = "/system/fonts/DroidSansFallback.ttf"
 else:
     font_path = "NotoSansJP-Regular.ttf"
-    if not os.path.exists(font_path):
-        font_path = r"C:\Windows\Fonts\msgothic.ttc"
 
 try:
     if os.path.exists(font_path):
@@ -46,9 +44,6 @@ COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
 
 
 def get_real_path_or_copy(uri_str, cache_dir):
-    """
-    Androidの content:// URI から安全にファイルを一時ディレクトリへコピーしてパスを返す関数
-    """
     if not uri_str.startswith("content://"):
         return uri_str, None
 
@@ -62,10 +57,8 @@ def get_real_path_or_copy(uri_str, cache_dir):
             uri = Uri.parse(uri_str)
             resolver = context.getContentResolver()
             
-            # ファイル名の取得を試みる
             filename = "temp_media_file"
             try:
-                Cursor = autoclass('android.database.Cursor')
                 OpenableColumns = autoclass('android.provider.OpenableColumns')
                 cursor = resolver.query(uri, None, None, None, None)
                 if cursor is not None and cursor.moveToFirst():
@@ -78,7 +71,6 @@ def get_real_path_or_copy(uri_str, cache_dir):
 
             temp_path = os.path.join(cache_dir, filename)
             
-            # InputStreamからキャッシュへ書き出し
             input_stream = resolver.openInputStream(uri)
             FileOutputStream = autoclass('java.io.FileOutputStream')
             output_stream = FileOutputStream(temp_path)
@@ -258,17 +250,6 @@ class MainLayout(BoxLayout):
             except Exception as e:
                 self.status_label.text = f"ピッカー起動エラー: {str(e)}"
                 self.write_log(f"[ERROR] ピッカー起動失敗: {str(e)}")
-        else:
-            self.status_label.text = "Windows環境: テスト用ダミー処理を開始します"
-            self.write_log("[INFO] PC環境のため、カレントディレクトリの 'test.jpg' を模擬処理します")
-            
-            dummy_file = "test.jpg"
-            if not os.path.exists(dummy_file):
-                img = Image.new('RGB', (100, 100), color=(73, 109, 137))
-                img.save(dummy_file)
-                self.write_log("[DEBUG] テスト用のダミー画像 'test.jpg' を作成しました")
-            
-            self.on_file_selected([os.path.abspath(dummy_file)])
 
     def on_file_selected(self, selection):
         if not selection:
@@ -280,19 +261,17 @@ class MainLayout(BoxLayout):
         self.status_label.text = f"準備中... (0 / {len(selection)})"
         self.write_log(f"[INFO] {len(selection)}個のファイルが選択されました。処理を開始します...")
         
-        # 画面復帰アニメーションを完了させるため、1フレーム（0.2秒）遅らせてバックグラウンド処理を起動
         Clock.schedule_once(lambda dt: threading.Thread(
             target=self.compress_multiple_files_thread, 
             args=(selection,), 
             daemon=True
         ).start(), 0.2)
 
-def compress_multiple_files_thread(self, file_paths):
+    def compress_multiple_files_thread(self, file_paths):
         img_count = 0
         video_count = 0
         total_files = len(file_paths)
         
-        # Pixel 10 Pro（Android）用のダウンロードフォルダおよびキャッシュ領域の設定
         base_download_dir = "/storage/emulated/0/Download"
         cache_dir = App.get_running_app().user_data_dir
 
@@ -304,13 +283,10 @@ def compress_multiple_files_thread(self, file_paths):
             if not raw_input_path:
                 continue
                 
-            # content:// URI の場合、一時キャッシュに複製
             working_path, original_filename = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
-                # 1. 元のフォルダ名を取得し「＜元フォルダ名＞_PapaAlbum」フォルダを作成
                 if raw_input_path.startswith("content://"):
-                    # content:// URI の場合は親フォルダ名の取得が困難なためフォールバック名を使用
                     parent_folder_name = "Media"
                 else:
                     parent_folder_name = pathlib.Path(raw_input_path).parent.name
@@ -322,15 +298,12 @@ def compress_multiple_files_thread(self, file_paths):
                 target_out_dir = os.path.join(base_download_dir, out_folder_name)
                 os.makedirs(target_out_dir, exist_ok=True)
 
-                # 2. ファイル名と拡張子の決定
                 input_path_obj = pathlib.Path(working_path)
                 filename = original_filename if original_filename else input_path_obj.name
                 ext = pathlib.Path(filename).suffix.lower()
                 
-                # 元のファイル名と同じ名前で出力パスを指定
                 output_path = os.path.join(target_out_dir, filename)
                 
-                # 3. 画像圧縮 / 動画コピー処理
                 if ext in [".jpg", ".jpeg", ".png"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
@@ -360,7 +333,6 @@ def compress_multiple_files_thread(self, file_paths):
             except Exception as e:
                 self.write_log(f"[ERROR] 処理失敗 {raw_input_path}: {e}")
             finally:
-                # 一時生成したキャッシュファイルの削除
                 if raw_input_path.startswith("content://") and os.path.exists(working_path):
                     try:
                         os.remove(working_path)
@@ -375,7 +347,7 @@ def compress_multiple_files_thread(self, file_paths):
             
         Clock.schedule_once(lambda dt: self.update_status(result_text))
         Clock.schedule_once(lambda dt: self.enable_button())
-        
+
     def update_status(self, text):
         self.status_label.text = text
 
