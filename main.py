@@ -47,6 +47,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
     """
     Androidの content:// URI から安全にファイルをコピーし、
     (一時パス, ファイル名, 元の親フォルダ名) を返す関数
+    ※重い処理のため必ずバックグラウンドスレッドから呼ぶこと
     """
     if not uri_str.startswith("content://"):
         parent_name = pathlib.Path(uri_str).parent.name
@@ -311,7 +312,12 @@ class MainLayout(BoxLayout):
                         selected_uris.append(data_uri.toString())
                 
                 if selected_uris:
-                    self.on_file_selected(selected_uris)
+                    # メインスレッドを即解放するため、別スレッドで処理を開始する
+                    threading.Thread(
+                        target=self.process_selected_files_thread,
+                        args=(selected_uris,),
+                        daemon=True
+                    ).start()
                 else:
                     self.status_label.text = "ファイルが選択されませんでした"
                     self.write_log("[INFO] ファイルが選択されませんでした")
@@ -319,23 +325,11 @@ class MainLayout(BoxLayout):
                 self.status_label.text = "キャンセルされました"
                 self.write_log("[INFO] ファイル選択がキャンセルされました")
 
-    def on_file_selected(self, selection):
-        if not selection:
-            self.status_label.text = "キャンセルされました"
-            self.write_log("[INFO] ファイル選択がキャンセルされました")
-            return
-            
-        self.select_btn.disabled = True
-        self.status_label.text = f"準備中... (0 / {len(selection)})"
-        self.write_log(f"[INFO] {len(selection)}個のファイルが選択されました。処理を開始します...")
+    def process_selected_files_thread(self, file_paths):
+        """ファイル選択後のすべての重い処理（準備〜圧縮）を行うスレッド"""
+        # UI状態の更新は Clock を経由
+        Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
         
-        Clock.schedule_once(lambda dt: threading.Thread(
-            target=self.compress_multiple_files_thread, 
-            args=(selection,), 
-            daemon=True
-        ).start(), 0.2)
-
-    def compress_multiple_files_thread(self, file_paths):
         img_count = 0
         video_count = 0
         total_files = len(file_paths)
@@ -351,6 +345,7 @@ class MainLayout(BoxLayout):
             if not raw_input_path:
                 continue
                 
+            # 重いファイルコピー処理もバックグラウンドで実行
             working_path, original_filename, parent_folder_name = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
@@ -409,6 +404,12 @@ class MainLayout(BoxLayout):
             
         Clock.schedule_once(lambda dt: self.update_status(result_text))
         Clock.schedule_once(lambda dt: self.enable_button())
+
+    def _prepare_processing_ui(self, count):
+        """処理開始時のUI状態リセット（メインスレッド実行）"""
+        self.select_btn.disabled = True
+        self.status_label.text = f"準備中... (0 / {count})"
+        self.write_log(f"[INFO] {count}個のファイルが選択されました。処理を開始します...")
 
     def update_status(self, text):
         self.status_label.text = text
