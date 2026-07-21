@@ -32,31 +32,44 @@ jobs:
       run: |
         pip install --upgrade buildozer cython
 
-    # キャッシュキーを -v5 に変更して古いSDKキャッシュを破棄
+    # キャッシュを v6 に変更してクリーンな環境を作成
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
         path: ~/.buildozer
-        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v5
+        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v6
 
     - name: Cache Project Buildozer directory
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v5
+        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v6
 
-    # ライセンス事前同意のみ設定（ディレクトリは作らずファイルのみ）
-    - name: Accept Android SDK Licenses
+    # SDK Command-line Tools の正しい配置 & sdkmanager と旧 tools/bin へのシンボリックリンク作成
+    - name: Setup Android SDK and Licenses
       run: |
-        mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
-        echo -e "\n2433373577137492b60335c12c34f245070cd693" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
-        echo -e "\n84831b94f02130cf4e5f4295b0c06568c1967e3d" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license
-        echo -e "\nd97537e10173740ed0a58d2e2e9028dced04cfc3" > ~/.buildozer/android/platform/android-sdk/licenses/intel-android-sdk-license
+        SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
+        mkdir -p "$SDK_DIR/cmdline-tools"
+        cd "$SDK_DIR/cmdline-tools"
+        
+        # cmdline-tools のダウンロードと解凍 (最新構造: cmdline-tools/latest/bin/sdkmanager)
+        if [ ! -d "latest" ]; then
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip
+          rm cmdline-tools.zip
+          mv cmdline-tools latest
+        fi
+        
+        # Buildozer が探す旧互換パス (tools/bin/sdkmanager) へのシンボリックリンクを作成
+        mkdir -p "$SDK_DIR/tools"
+        ln -sf "$SDK_DIR/cmdline-tools/latest/bin" "$SDK_DIR/tools/bin"
+        
+        # ライセンス一括同意
+        yes | "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_DIR" --licenses || true
 
-    # Buildozerに自動で適切なSDK/cmdline-toolsをインストールさせる
     - name: Build APK
       run: |
-        yes | buildozer -v android debug
+        buildozer -v android debug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
