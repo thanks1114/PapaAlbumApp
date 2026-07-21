@@ -16,8 +16,7 @@ import pathlib
 import shutil
 import threading
 import webbrowser # ポリシーURL等を開く用
-from PIL import Image
-import piexif 
+from PIL import Image, ImageOps
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
@@ -249,7 +248,6 @@ class MainLayout(BoxLayout):
         
         if platform == "android":
             try:
-                # ★ 廃止されたstoragepathに代わり、jnius経由でAndroidネイティブAPIからパブリックのDownloadパスを直接取得
                 from jnius import autoclass
                 Environment = autoclass('android.os.Environment')
                 download_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
@@ -289,18 +287,26 @@ class MainLayout(BoxLayout):
                 
                 if ext in [".jpg", ".jpeg", ".png"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
-                    img = Image.open(input_path)
-                    img.thumbnail((3000, 3000))
                     
-                    if ext in [".jpg", ".jpeg"]:
-                        try:
-                            exif_dict = piexif.load(img.info.get("exif", b""))
-                            exif_bytes = piexif.dump(exif_dict)
-                            img.save(output_path, "jpeg", exif=exif_bytes)
-                        except Exception:
-                            img.save(output_path, "jpeg")
-                    else:
-                        img.save(output_path)
+                    with Image.open(input_path) as img:
+                        # 1. 元画像からExifデータを取得（位置情報や撮影設定等が含まれる）
+                        exif_data = img.info.get("exif")
+                        
+                        # 2. ExifのOrientationタグに基づいて画像を物理的に正しく回転補正
+                        img = ImageOps.exif_transpose(img)
+                        
+                        # 3. リサイズ（アスペクト比維持）
+                        img.thumbnail((3000, 3000))
+                        
+                        # 4. 保存処理（Exifデータを保持したまま書き出し）
+                        save_kwargs = {}
+                        if exif_data:
+                            save_kwargs["exif"] = exif_data
+                            
+                        if ext in [".jpg", ".jpeg"]:
+                            img.save(output_path, "JPEG", quality=85, **save_kwargs)
+                        else:
+                            img.save(output_path, **save_kwargs)
                         
                     os.utime(output_path, (timestamp, timestamp))
                     img_count += 1
