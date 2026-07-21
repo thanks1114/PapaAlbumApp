@@ -249,6 +249,7 @@ class MainLayout(BoxLayout):
                 
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
+                String = autoclass('java.lang.String')
                 
                 intent = Intent(Intent.ACTION_GET_CONTENT)
                 intent.setType("*/*")
@@ -256,16 +257,18 @@ class MainLayout(BoxLayout):
                 intent.addCategory(Intent.CATEGORY_OPENABLE)
                 
                 bind(on_activity_result=self.on_activity_result)
-                PythonActivity.mActivity.startActivityForResult(
-                    Intent.createChooser(intent, "メディアを選択"), 1001
-                )
+                
+                # String("メディアを選択") に修正
+                chooser_intent = Intent.createChooser(intent, String("メディアを選択"))
+                PythonActivity.mActivity.startActivityForResult(chooser_intent, 1001)
+                
                 self.write_log("[INFO] Native Intent ピッカーを起動しました")
             except Exception as e:
                 self.status_label.text = f"ピッカー起動エラー: {str(e)}"
                 self.write_log(f"[ERROR] ピッカー起動失敗: {str(e)}")
         else:
             self.write_log("[INFO] Android端末上でのみ動作します")
-
+            
     def on_activity_result(self, request_code, result_code, intent):
         if request_code == 1001:
             try:
