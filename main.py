@@ -244,7 +244,9 @@ class MainLayout(BoxLayout):
     def open_file_picker(self, instance):
         if platform == "android":
             try:
-                from jnius import autoclass, activity
+                from jnius import autoclass
+                from android.activity import bind
+                
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
                 
@@ -253,7 +255,7 @@ class MainLayout(BoxLayout):
                 intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
                 intent.addCategory(Intent.CATEGORY_OPENABLE)
                 
-                activity.bind(on_activity_result=self.on_activity_result)
+                bind(on_activity_result=self.on_activity_result)
                 PythonActivity.mActivity.startActivityForResult(
                     Intent.createChooser(intent, "メディアを選択"), 1001
                 )
@@ -266,8 +268,11 @@ class MainLayout(BoxLayout):
 
     def on_activity_result(self, request_code, result_code, intent):
         if request_code == 1001:
-            from jnius import autoclass, activity
-            activity.unbind(on_activity_result=self.on_activity_result)
+            try:
+                from android.activity import unbind
+                unbind(on_activity_result=self.on_activity_result)
+            except Exception:
+                pass
             
             # RESULT_OK (-1) チェック
             if result_code == -1 and intent is not None:
