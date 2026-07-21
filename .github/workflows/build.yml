@@ -2,8 +2,8 @@ name: Build Kivy APK
 
 on:
   push:
-    branches: [ main ]  # mainブランチにpushされたら自動ビルド
-  workflow_dispatch:     # GitHub上のボタンから手動実行も可能
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,27 +12,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # --- [任意] Issue等からアイコン画像を自動取得 ---
-    - name: Download App Icon from Issue
-      run: |
-        ICON_URL="https://github.com/user-attachments/assets/xxxx-xxxx-xxxx-xxxx"
-        
-        if [[ "$ICON_URL" == *"user-attachments/assets/xxxx"* ]]; then
-          echo "有効な画像URLが未設定のため、既存の icon.png を使用します。"
-        else
-          wget -q -O icon.png "$ICON_URL"
-          echo "Icon downloaded successfully."
-        fi
-
-    # --- Java環境のセットアップ (JDK 17) ---
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '17'
 
-    # --- 必要パッケージのインストール ---
-    # pillow-heif や pillow のコンパイルに必要な cmake, libheif-dev, libjpeg-dev を追加
     - name: Install dependencies
       run: |
         sudo apt update
@@ -41,39 +26,28 @@ jobs:
                             build-essential libssl-dev libsqlite3-dev bzip2 libbz2-dev \
                             liblzma-dev libgdbm-dev libgdbm-compat-dev libreadline-dev \
                             uuid-dev gawk libncurses5-dev libncursesw5-dev \
-                            cmake libheif-dev libjpeg-dev zlib1g-dev
+                            cmake libjpeg-dev zlib1g-dev
 
-    # --- Buildozer & Cython のインストール ---
     - name: Install buildozer
       run: |
         pip install buildozer cython
 
-    # --- Buildozer キャッシュの設定 ---
+    # キャッシュキーを v4 に更新してクリーンビルドを実施
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
         path: ~/.buildozer
-        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v2
-        restore-keys: |
-          ${{ runner.os }}-buildozer-global-
+        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v4
 
     - name: Cache Project Buildozer directory
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v2
-        restore-keys: |
-          ${{ runner.os }}-buildozer-local-
+        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v4
 
-    # --- Android SDK & ライセンス自動承諾 ---
     - name: Setup Android SDK and Accept Licenses
       run: |
         SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
-        
-        if [ -L "$SDK_DIR/tools/bin/sdkmanager" ]; then
-          rm -f "$SDK_DIR/tools/bin/sdkmanager"
-        fi
-
         if [ ! -d "$SDK_DIR/cmdline-tools" ]; then
           mkdir -p "$SDK_DIR/cmdline-tools"
           cd "$SDK_DIR/cmdline-tools"
@@ -81,24 +55,13 @@ jobs:
           unzip -q cmdline-tools.zip
           rm cmdline-tools.zip
           mv cmdline-tools latest
-          
-          mkdir -p ../tools/bin
-          ln -s ../../cmdline-tools/latest/bin/sdkmanager ../tools/bin/sdkmanager
-          mkdir -p ../licenses
-          echo -e "\n89ab2ddd8d477d506bb51ca248315222b49ff45a\n84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c24de1a812cf475b6eb9d4f4002e7dd9\nd56f5187479451eabf01fb7431b34d65b2d07dd8\ne9ac30531ff8ecc33d115494cae51ffb0fc08cb0\n2714b11687f312cd0266164d4ee4d22970a0d939" > ../licenses/android-sdk-license
-          echo -e "\n849ac24de157199418e30573bab4c9c91346d8abd" > ../licenses/android-sdk-preview-license
           yes | ./latest/bin/sdkmanager --sdk_root=$HOME/.buildozer/android/platform/android-sdk --licenses
-        else
-          mkdir -p "$SDK_DIR/tools/bin"
-          ln -sf ../../cmdline-tools/latest/bin/sdkmanager "$SDK_DIR/tools/bin/sdkmanager"
         fi
 
-    # --- APK ビルド実行 ---
     - name: Build APK
       run: |
         buildozer -v android debug
 
-    # --- ビルド成果物 (APK) のアップロード ---
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
