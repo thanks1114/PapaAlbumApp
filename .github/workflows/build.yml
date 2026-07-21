@@ -3,7 +3,7 @@ name: Build Kivy APK
 on:
   push:
     branches: [ main ]  # mainブランチにpushされたら自動ビルド
-  workflow_dispatch:     # 手動での実行ボタンも残す
+  workflow_dispatch:     # GitHub上のボタンから手動実行も可能
 
 jobs:
   build:
@@ -12,32 +12,30 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # ================= [任意] Issueからアイコン画像を自動ダウンロード =================
+    # --- [任意] Issue等からアイコン画像を自動取得 ---
     - name: Download App Icon from Issue
       run: |
-        # ↓【重要】IssueのURLではなく、アップロードされた「画像そのものの直リンクURL」を指定します
         ICON_URL="https://github.com/user-attachments/assets/xxxx-xxxx-xxxx-xxxx"
         
-        # プレースホルダーのままの場合はダウンロードをスキップする安全策
         if [[ "$ICON_URL" == *"user-attachments/assets/xxxx"* ]]; then
-          echo "有効な画像URLが設定されていないため、デフォルトのアイコンを使用します。"
+          echo "有効な画像URLが未設定のため、既存の icon.png を使用します。"
         else
-          # アイコンをダウンロードしてプロジェクトのルートに配置
           wget -q -O icon.png "$ICON_URL"
           echo "Icon downloaded successfully."
         fi
-    # =================================================================================
 
+    # --- Java環境のセットアップ (JDK 17) ---
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '17'
 
+    # --- 必要パッケージのインストール ---
+    # pillow-heif や pillow のコンパイルに必要な cmake, libheif-dev, libjpeg-dev を追加
     - name: Install dependencies
       run: |
         sudo apt update
-        # pillow-heif や libheif 関連のコンパイルに必要なシステムライブラリ（cmake, libheif-dev 等）を追加
         sudo apt install -y python3 python3-pip python3-setuptools git zip unzip wget \
                             libtool autoconf automake pkg-config libffi-dev \
                             build-essential libssl-dev libsqlite3-dev bzip2 libbz2-dev \
@@ -45,11 +43,12 @@ jobs:
                             uuid-dev gawk libncurses5-dev libncursesw5-dev \
                             cmake libheif-dev libjpeg-dev zlib1g-dev
 
+    # --- Buildozer & Cython のインストール ---
     - name: Install buildozer
       run: |
         pip install buildozer cython
 
-    # ================= キャッシュ設定 =================
+    # --- Buildozer キャッシュの設定 ---
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
@@ -65,9 +64,8 @@ jobs:
         key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v2
         restore-keys: |
           ${{ runner.os }}-buildozer-local-
-    # ========================================================================================
 
-    # --- 古いsdkmanagerのパスエラーを回避するための事前セットアップ ---
+    # --- Android SDK & ライセンス自動承諾 ---
     - name: Setup Android SDK and Accept Licenses
       run: |
         SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
@@ -95,10 +93,12 @@ jobs:
           ln -sf ../../cmdline-tools/latest/bin/sdkmanager "$SDK_DIR/tools/bin/sdkmanager"
         fi
 
+    # --- APK ビルド実行 ---
     - name: Build APK
       run: |
         buildozer -v android debug
 
+    # --- ビルド成果物 (APK) のアップロード ---
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
