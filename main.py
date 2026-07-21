@@ -16,7 +16,12 @@ import pathlib
 import shutil
 import threading
 import webbrowser # ポリシーURL等を開く用
-from PIL import Image
+from PIL import Image, ImageOps
+import piexif
+from pillow_heif import register_heif_opener
+
+# HEIC形式の読み込みをPillowに登録
+register_heif_opener()
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
@@ -100,7 +105,7 @@ class MainLayout(BoxLayout):
         self.select_btn.bind(on_press=self.open_file_picker)
         self.add_widget(self.select_btn)
 
-        # 4. スクロール可能なログ表示エリア（下部へ移動）
+        # 4. スクロール可能なログ表示エリア
         self.log_scroll = ScrollView(
             size_hint_y=0.3,
             bar_width=10,
@@ -126,7 +131,7 @@ class MainLayout(BoxLayout):
         self.log_scroll.add_widget(self.log_label)
         self.add_widget(self.log_scroll)
 
-        # 5. ログコピーボタン（ログエリアのすぐ下、フッターの直上に配置）
+        # 5. ログコピーボタン
         self.copy_log_btn = Button(
             text="ログをクリップボードにコピー",
             font_name=FONT_NAME,
@@ -138,7 +143,7 @@ class MainLayout(BoxLayout):
         self.copy_log_btn.bind(on_press=self.copy_log_to_clipboard)
         self.add_widget(self.copy_log_btn)
         
-        # 6. フッターエリア（最下部固定）
+        # 6. フッターエリア
         footer = BoxLayout(orientation='horizontal', size_hint_y=0.08, spacing=10)
         
         self.policy_btn = Button(
@@ -248,7 +253,6 @@ class MainLayout(BoxLayout):
         
         if platform == "android":
             try:
-                # jnius経由でAndroidネイティブAPIからパブリックのDownloadパスを取得
                 from jnius import autoclass
                 Environment = autoclass('android.os.Environment')
                 download_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
@@ -286,22 +290,50 @@ class MainLayout(BoxLayout):
             try:
                 timestamp = os.path.getmtime(input_path)
                 
-                if ext in [".jpg", ".jpeg", ".png"]:
+                if ext in [".jpg", ".jpeg", ".png", ".heic", ".heif"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
+                    
+                    # 1. 原本からExif（GPS含む）を抽出
+                    exif_bytes = None
+                    try:
+                        exif_dict = piexif.load(input_path)
+                        exif_bytes = piexif.dump(exif_dict)
+                    except Exception as e:
+                        self.write_log(f"[DEBUG] Exif読み込みスキップ: {e}")
+
+                    # 2. 画像の読み込みと回転補正
                     img = Image.open(input_path)
-                    
-                    # ★【重要】元画像の生のExifデータをそのまま保持
-                    exif_data = img.info.get("exif")
-                    
+                    try:
+                        img = ImageOps.exif_transpose(img)
+                    except Exception as e:
+                        self.write_log(f"[DEBUG] 回転補正スキップ: {e}")
+
+                    # 3. リサイズ処理
                     img.thumbnail((3000, 3000))
-                    
+
+                    # 4. 同じファイル名・同じ拡張子で保存
                     if ext in [".jpg", ".jpeg"]:
-                        # 生のExifデータを破棄せずそのまま埋め込んで保存
-                        if exif_data:
-                            img.save(output_path, "jpeg", exif=exif_data)
+                        if img.mode in ("RGBA", "P"):
+                            img = img.convert("RGB")
+                        if exif_bytes:
+                            img.save(output_path, "jpeg", exif=exif_bytes, quality=85)
                         else:
-                            img.save(output_path, "jpeg")
-                    else:
+                            img.save(output_path, "jpeg", quality=85)
+
+                    elif ext in [".heic", ".heif"]:
+                        try:
+                            img.save(output_path, "HEIF", quality=85)
+                        except Exception as e:
+                            self.write_log(f"[WARN] HEIC保存エラーのためJPEGで代替保存します: {e}")
+                            alt_output_path = os.path.join(out_folder, pathlib.Path(filename).stem + ".jpg")
+                            if img.mode in ("RGBA", "P"):
+                                img = img.convert("RGB")
+                            if exif_bytes:
+                                img.save(alt_output_path, "jpeg", exif=exif_bytes, quality=85)
+                            else:
+                                img.save(alt_output_path, "jpeg", quality=85)
+
+                    else:  # .png
                         img.save(output_path)
                         
                     os.utime(output_path, (timestamp, timestamp))
@@ -342,7 +374,6 @@ class PapaAlbumApp(App):
         if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
             self.show_disclaimer_popup()
             
-        # Android起動時に外部ストレージの読み書き権限を要求
         if platform == "android":
             try:
                 from android.permissions import request_permissions, Permission
