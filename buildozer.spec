@@ -66,7 +66,7 @@ fullscreen = 1
 
 # (list) パーミッション（権限）の設定
 # Android 13以降の画像権限、および12以下のストレージ権限を網羅しています
-android.permissions = READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, READ_MEDIA_IMAGES
+android.permissions = READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, ACCESS_MEDIA_LOCATION
 
 # (list) アプリに必要なハードウェア機能
 #android.features =

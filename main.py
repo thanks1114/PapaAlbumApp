@@ -44,6 +44,9 @@ COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
 
 
 def get_real_path_or_copy(uri_str, cache_dir):
+    """
+    Androidの content:// URI から安全にファイルを一時ディレクトリへコピーしてパスを返す関数
+    """
     if not uri_str.startswith("content://"):
         return uri_str, None
 
@@ -272,6 +275,7 @@ class MainLayout(BoxLayout):
         video_count = 0
         total_files = len(file_paths)
         
+        # Pixel 10 Pro（Android）用のダウンロードフォルダ設定
         base_download_dir = "/storage/emulated/0/Download"
         cache_dir = App.get_running_app().user_data_dir
 
@@ -286,6 +290,7 @@ class MainLayout(BoxLayout):
             working_path, original_filename = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
+                # 1. 元のフォルダ名を取得し「＜元フォルダ名＞_PapaAlbum」フォルダを作成
                 if raw_input_path.startswith("content://"):
                     parent_folder_name = "Media"
                 else:
@@ -298,17 +303,22 @@ class MainLayout(BoxLayout):
                 target_out_dir = os.path.join(base_download_dir, out_folder_name)
                 os.makedirs(target_out_dir, exist_ok=True)
 
+                # 2. ファイル名の確定
                 input_path_obj = pathlib.Path(working_path)
                 filename = original_filename if original_filename else input_path_obj.name
                 ext = pathlib.Path(filename).suffix.lower()
                 
                 output_path = os.path.join(target_out_dir, filename)
                 
+                # 3. 画像圧縮（位置情報などのEXIF保持）/ 動画コピー処理
                 if ext in [".jpg", ".jpeg", ".png"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
                     with Image.open(working_path) as img:
-                        exif_data = img.info.get("exif")
+                        # GPS（位置情報）を含む全EXIFを取得
+                        exif_data = img.getexif()
+                        
+                        # 向き補正
                         img = ImageOps.exif_transpose(img)
                         img.thumbnail((3000, 3000))
                         
@@ -369,7 +379,8 @@ class PapaAlbumApp(App):
                 from android.permissions import request_permissions, Permission
                 request_permissions([
                     Permission.READ_EXTERNAL_STORAGE,
-                    Permission.WRITE_EXTERNAL_STORAGE
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.ACCESS_MEDIA_LOCATION
                 ])
             except Exception as e:
                 print(f"Failed to request permissions: {e}")
