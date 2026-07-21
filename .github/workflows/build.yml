@@ -32,26 +32,30 @@ jobs:
       run: |
         pip install --upgrade buildozer cython
 
-    # キャッシュを v8 に更新して古い破綻キャッシュを完全に削除
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
         path: ~/.buildozer
-        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v8
+        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v9
 
     - name: Cache Project Buildozer directory
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v8
+        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v9
 
-    # Buildozerに直接全自動で環境構築・ライセンス同意を行わせる
+    # Android SDKライセンスの事前自動同意
+    - name: Accept Android SDK Licenses
+      run: |
+        mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
+        printf "24333f8a63b6825ea9dd8273f838ec8f2b2e8183\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9dd8273f838ec8f2b2e8183" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-license
+        printf "84831b9402116e2678286b26632fe5c45734e646\n7a079231c9a1148677af54a7d330d500271c6946\n6010071077b0b34170746d824014251124970773" > ~/.buildozer/android/platform/android-sdk/licenses/android-googletv-license
+        printf "33b622e746b070b805566463863e4ec53f426d9c" > ~/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license
+
+    # ビルド実行（非対話モード指定）
     - name: Build APK
       run: |
-        buildozer android debug
-      env:
-        ACCEPT_BUILD_LICENSES: "y"
-        NONINTERACTIVE: "1"
+        yes | buildozer android debug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
