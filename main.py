@@ -45,10 +45,13 @@ COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
 
 def get_real_path_or_copy(uri_str, cache_dir):
     """
-    Androidの content:// URI から安全にファイルを一時ディレクトリへコピーしてパスを返す関数
+    Androidの content:// URI から安全にファイルをコピーし、
+    (一時パス, ファイル名, 元の親フォルダ名) を返す関数
     """
     if not uri_str.startswith("content://"):
-        return uri_str, None
+        parent_name = pathlib.Path(uri_str).parent.name
+        filename = pathlib.Path(uri_str).name
+        return uri_str, filename, parent_name
 
     if platform == "android":
         try:
@@ -61,17 +64,32 @@ def get_real_path_or_copy(uri_str, cache_dir):
             resolver = context.getContentResolver()
             
             filename = "temp_media_file"
+            parent_folder_name = "Media"
+            
+            # --- メタデータからファイル名と元フォルダ名を取得 ---
             try:
-                OpenableColumns = autoclass('android.provider.OpenableColumns')
-                cursor = resolver.query(uri, None, None, None, None)
+                MediaStore = autoclass('android.provider.MediaStore')
+                projection = [MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DISPLAY_NAME]
+                cursor = resolver.query(uri, projection, None, None, None)
+                
                 if cursor is not None and cursor.moveToFirst():
-                    name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    # 表示名（ファイル名）の取得
+                    name_index = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
                     if name_index != -1:
                         filename = cursor.getString(name_index)
+                    
+                    # DATA 列（元パス）から親フォルダ名を抽出
+                    data_index = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if data_index != -1:
+                        real_path = cursor.getString(data_index)
+                        if real_path:
+                            parent_folder_name = pathlib.Path(real_path).parent.name
+                            
                     cursor.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Failed to query MediaStore metadata: {e}")
 
+            # --- キャッシュディレクトリへ一時コピー ---
             temp_path = os.path.join(cache_dir, filename)
             
             input_stream = resolver.openInputStream(uri)
@@ -87,11 +105,13 @@ def get_real_path_or_copy(uri_str, cache_dir):
                 
             input_stream.close()
             output_stream.close()
-            return temp_path, filename
+            
+            return temp_path, filename, parent_folder_name
         except Exception as e:
             print(f"Failed to copy content URI: {e}")
-            return uri_str, None
-    return uri_str, None
+            return uri_str, None, "Media"
+            
+    return uri_str, pathlib.Path(uri_str).name, "Media"
 
 
 class MainLayout(BoxLayout):
@@ -258,7 +278,6 @@ class MainLayout(BoxLayout):
                 
                 bind(on_activity_result=self.on_activity_result)
                 
-                # String("メディアを選択") に修正
                 chooser_intent = Intent.createChooser(intent, String("メディアを選択"))
                 PythonActivity.mActivity.startActivityForResult(chooser_intent, 1001)
                 
@@ -268,7 +287,7 @@ class MainLayout(BoxLayout):
                 self.write_log(f"[ERROR] ピッカー起動失敗: {str(e)}")
         else:
             self.write_log("[INFO] Android端末上でのみ動作します")
-            
+
     def on_activity_result(self, request_code, result_code, intent):
         if request_code == 1001:
             try:
@@ -277,7 +296,6 @@ class MainLayout(BoxLayout):
             except Exception:
                 pass
             
-            # RESULT_OK (-1) チェック
             if result_code == -1 and intent is not None:
                 selected_uris = []
                 
@@ -333,14 +351,9 @@ class MainLayout(BoxLayout):
             if not raw_input_path:
                 continue
                 
-            working_path, original_filename = get_real_path_or_copy(raw_input_path, cache_dir)
+            working_path, original_filename, parent_folder_name = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
-                if raw_input_path.startswith("content://"):
-                    parent_folder_name = "Media"
-                else:
-                    parent_folder_name = pathlib.Path(raw_input_path).parent.name
-                
                 if not parent_folder_name or parent_folder_name in ["/", "\\", "."]:
                     parent_folder_name = "Media"
 
@@ -348,8 +361,7 @@ class MainLayout(BoxLayout):
                 target_out_dir = os.path.join(base_download_dir, out_folder_name)
                 os.makedirs(target_out_dir, exist_ok=True)
 
-                input_path_obj = pathlib.Path(working_path)
-                filename = original_filename if original_filename else input_path_obj.name
+                filename = original_filename if original_filename else pathlib.Path(working_path).name
                 ext = pathlib.Path(filename).suffix.lower()
                 
                 output_path = os.path.join(target_out_dir, filename)
@@ -358,10 +370,7 @@ class MainLayout(BoxLayout):
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
                     with Image.open(working_path) as img:
-                        # GPS（位置情報）を含む全EXIFを取得
                         exif_data = img.getexif()
-                        
-                        # 向き補正
                         img = ImageOps.exif_transpose(img)
                         img.thumbnail((3000, 3000))
                         
