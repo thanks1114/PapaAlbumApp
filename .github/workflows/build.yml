@@ -32,29 +32,26 @@ jobs:
       run: |
         pip install --upgrade buildozer cython
 
-    # キャッシュを v7 に変更
+    # キャッシュを v8 に更新して古い破綻キャッシュを完全に削除
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
         path: ~/.buildozer
-        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v7
+        key: ${{ runner.os }}-buildozer-global-${{ hashFiles('buildozer.spec') }}-v8
 
     - name: Cache Project Buildozer directory
       uses: actions/cache@v4
       with:
         path: .buildozer
-        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v7
+        key: ${{ runner.os }}-buildozer-local-${{ hashFiles('buildozer.spec') }}-v8
 
-    # GitHub Runnerの標準Android SDKを利用するようにシンボリックリンクを作成
-    - name: Setup Android SDK Path for Buildozer
-      run: |
-        mkdir -p ~/.buildozer/android/platform
-        ln -sf $ANDROID_HOME ~/.buildozer/android/platform/android-sdk
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-
+    # Buildozerに直接全自動で環境構築・ライセンス同意を行わせる
     - name: Build APK
       run: |
-        buildozer -v android debug
+        buildozer android debug
+      env:
+        ACCEPT_BUILD_LICENSES: "y"
+        NONINTERACTIVE: "1"
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
