@@ -244,15 +244,54 @@ class MainLayout(BoxLayout):
     def open_file_picker(self, instance):
         if platform == "android":
             try:
-                from plyer import filechooser
-                filechooser.open_file(
-                    multiple=True,
-                    filters=[("Media", "*/*")], 
-                    on_selection=self.on_file_selected
+                from jnius import autoclass, activity
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Intent = autoclass('android.content.Intent')
+                
+                intent = Intent(Intent.ACTION_GET_CONTENT)
+                intent.setType("*/*")
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
+                intent.addCategory(Intent.CATEGORY_OPENABLE)
+                
+                activity.bind(on_activity_result=self.on_activity_result)
+                PythonActivity.mActivity.startActivityForResult(
+                    Intent.createChooser(intent, "メディアを選択"), 1001
                 )
+                self.write_log("[INFO] Native Intent ピッカーを起動しました")
             except Exception as e:
                 self.status_label.text = f"ピッカー起動エラー: {str(e)}"
                 self.write_log(f"[ERROR] ピッカー起動失敗: {str(e)}")
+        else:
+            self.write_log("[INFO] Android端末上でのみ動作します")
+
+    def on_activity_result(self, request_code, result_code, intent):
+        if request_code == 1001:
+            from jnius import autoclass, activity
+            activity.unbind(on_activity_result=self.on_activity_result)
+            
+            # RESULT_OK (-1) チェック
+            if result_code == -1 and intent is not None:
+                selected_uris = []
+                
+                clip_data = intent.getClipData()
+                if clip_data is not None:
+                    count = clip_data.getItemCount()
+                    for i in range(count):
+                        item = clip_data.getItemAt(i)
+                        selected_uris.append(item.getUri().toString())
+                else:
+                    data_uri = intent.getData()
+                    if data_uri is not None:
+                        selected_uris.append(data_uri.toString())
+                
+                if selected_uris:
+                    self.on_file_selected(selected_uris)
+                else:
+                    self.status_label.text = "ファイルが選択されませんでした"
+                    self.write_log("[INFO] ファイルが選択されませんでした")
+            else:
+                self.status_label.text = "キャンセルされました"
+                self.write_log("[INFO] ファイル選択がキャンセルされました")
 
     def on_file_selected(self, selection):
         if not selection:
@@ -275,7 +314,6 @@ class MainLayout(BoxLayout):
         video_count = 0
         total_files = len(file_paths)
         
-        # Pixel 10 Pro（Android）用のダウンロードフォルダ設定
         base_download_dir = "/storage/emulated/0/Download"
         cache_dir = App.get_running_app().user_data_dir
 
@@ -290,7 +328,6 @@ class MainLayout(BoxLayout):
             working_path, original_filename = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
-                # 1. 元のフォルダ名を取得し「＜元フォルダ名＞_PapaAlbum」フォルダを作成
                 if raw_input_path.startswith("content://"):
                     parent_folder_name = "Media"
                 else:
@@ -303,14 +340,12 @@ class MainLayout(BoxLayout):
                 target_out_dir = os.path.join(base_download_dir, out_folder_name)
                 os.makedirs(target_out_dir, exist_ok=True)
 
-                # 2. ファイル名の確定
                 input_path_obj = pathlib.Path(working_path)
                 filename = original_filename if original_filename else input_path_obj.name
                 ext = pathlib.Path(filename).suffix.lower()
                 
                 output_path = os.path.join(target_out_dir, filename)
                 
-                # 3. 画像圧縮（位置情報などのEXIF保持）/ 動画コピー処理
                 if ext in [".jpg", ".jpeg", ".png"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
