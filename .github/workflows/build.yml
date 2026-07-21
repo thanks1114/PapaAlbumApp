@@ -12,7 +12,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # ================= [修正] Issueからアイコン画像を自動ダウンロード =================
+    # ================= [任意] Issueからアイコン画像を自動ダウンロード =================
     - name: Download App Icon from Issue
       run: |
         # ↓【重要】IssueのURLではなく、アップロードされた「画像そのものの直リンクURL」を指定します
@@ -37,17 +37,19 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
+        # pillow-heif や libheif 関連のコンパイルに必要なシステムライブラリ（cmake, libheif-dev 等）を追加
         sudo apt install -y python3 python3-pip python3-setuptools git zip unzip wget \
                             libtool autoconf automake pkg-config libffi-dev \
                             build-essential libssl-dev libsqlite3-dev bzip2 libbz2-dev \
                             liblzma-dev libgdbm-dev libgdbm-compat-dev libreadline-dev \
-                            uuid-dev gawk libncurses5-dev libncursesw5-dev
+                            uuid-dev gawk libncurses5-dev libncursesw5-dev \
+                            cmake libheif-dev libjpeg-dev zlib1g-dev
 
     - name: Install buildozer
       run: |
         pip install buildozer cython
 
-    # ================= キャッシュ設定（-v2を追加してplyer未検出バグを修正） =================
+    # ================= キャッシュ設定 =================
     - name: Cache Buildozer global directory
       uses: actions/cache@v4
       with:
