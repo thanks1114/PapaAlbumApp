@@ -25,13 +25,10 @@ if platform == "android":
     if not os.path.exists(font_path):
         font_path = "/system/fonts/DroidSansFallback.ttf"
 else:
-    # Windows環境用のフォント選定
     font_path = "NotoSansJP-Regular.ttf"
-    # ローカルになければ Windows 標準の MS ゴシックを安全なフォールバックとして使用
     if not os.path.exists(font_path):
         font_path = r"C:\Windows\Fonts\msgothic.ttc"
 
-# フォント登録時のクラッシュを防ぐ安全対策
 try:
     if os.path.exists(font_path):
         LabelBase.register(name=FONT_NAME, fn_regular=font_path)
@@ -41,11 +38,66 @@ except Exception as e:
     print(f"Font registration failed: {e}")
     FONT_NAME = None
 
-# --- カラーパレット定義（パパ・子ども向けの柔らかいアースカラー） ---
-COLOR_BG = (0.99, 0.98, 0.96, 1)       # 温かみのあるミルク色 (#FDFBF9)
-COLOR_TEXT = (0.29, 0.22, 0.17, 1)      # 優しいダークブラウン (#4A382C)
-COLOR_PRIMARY = (0.90, 0.58, 0.39, 1)   # ソフトなテラコッタオレンジ (#E69467)
-COLOR_SECONDARY = (0.45, 0.62, 0.51, 1) # 落ち着いたリーフグリーン (#739E82)
+# --- カラーパレット定義 ---
+COLOR_BG = (0.99, 0.98, 0.96, 1)
+COLOR_TEXT = (0.29, 0.22, 0.17, 1)
+COLOR_PRIMARY = (0.90, 0.58, 0.39, 1)
+COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
+
+
+def get_real_path_or_copy(uri_str, cache_dir):
+    """
+    Androidの content:// URI から安全にファイルを一時ディレクトリへコピーしてパスを返す関数
+    """
+    if not uri_str.startswith("content://"):
+        return uri_str, None
+
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            context = PythonActivity.mActivity
+            Uri = autoclass('android.net.Uri')
+            
+            uri = Uri.parse(uri_str)
+            resolver = context.getContentResolver()
+            
+            # ファイル名の取得を試みる
+            filename = "temp_media_file"
+            try:
+                Cursor = autoclass('android.database.Cursor')
+                OpenableColumns = autoclass('android.provider.OpenableColumns')
+                cursor = resolver.query(uri, None, None, None, None)
+                if cursor is not None and cursor.moveToFirst():
+                    name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if name_index != -1:
+                        filename = cursor.getString(name_index)
+                    cursor.close()
+            except Exception:
+                pass
+
+            temp_path = os.path.join(cache_dir, filename)
+            
+            # InputStreamからキャッシュへ書き出し
+            input_stream = resolver.openInputStream(uri)
+            FileOutputStream = autoclass('java.io.FileOutputStream')
+            output_stream = FileOutputStream(temp_path)
+            
+            buffer = bytearray(1024 * 64)
+            while True:
+                bytes_read = input_stream.read(buffer)
+                if bytes_read <= 0:
+                    break
+                output_stream.write(buffer, 0, bytes_read)
+                
+            input_stream.close()
+            output_stream.close()
+            return temp_path, filename
+        except Exception as e:
+            print(f"Failed to copy content URI: {e}")
+            return uri_str, None
+    return uri_str, None
+
 
 class MainLayout(BoxLayout):
     def __init__(self, **kwargs):
@@ -54,13 +106,11 @@ class MainLayout(BoxLayout):
         self.padding = 20
         self.spacing = 15
         
-        # 背景色の設定
         with self.canvas.before:
             Color(*COLOR_BG)
             self.bg_rect = Rectangle(size=self.size, pos=self.pos)
         self.bind(size=self._update_rect, pos=self._update_rect)
         
-        # 1. アプリタイトル表示
         self.title_label = Label(
             text="PapaAlbum - パパの思い出写真圧縮",
             font_size='20sp',
@@ -71,7 +121,6 @@ class MainLayout(BoxLayout):
         )
         self.add_widget(self.title_label)
         
-        # 2. 状態・進捗表示ラベル
         self.status_label = Label(
             text="下のボタンから画像・動画を選択してください", 
             color=COLOR_TEXT,
@@ -83,7 +132,6 @@ class MainLayout(BoxLayout):
         self.status_label.bind(size=self.status_label.setter('text_size'))
         self.add_widget(self.status_label)
         
-        # 3. 実行ボタン（メインアクションを上側に配置）
         self.select_btn = Button(
             text="画像・動画を選択して処理", 
             size_hint_y=0.25,
@@ -100,7 +148,6 @@ class MainLayout(BoxLayout):
         self.select_btn.bind(on_press=self.open_file_picker)
         self.add_widget(self.select_btn)
 
-        # 4. スクロール可能なログ表示エリア（下部へ移動）
         self.log_scroll = ScrollView(
             size_hint_y=0.3,
             bar_width=10,
@@ -126,7 +173,6 @@ class MainLayout(BoxLayout):
         self.log_scroll.add_widget(self.log_label)
         self.add_widget(self.log_scroll)
 
-        # 5. ログコピーボタン（ログエリアのすぐ下、フッターの直上に配置）
         self.copy_log_btn = Button(
             text="ログをクリップボードにコピー",
             font_name=FONT_NAME,
@@ -138,7 +184,6 @@ class MainLayout(BoxLayout):
         self.copy_log_btn.bind(on_press=self.copy_log_to_clipboard)
         self.add_widget(self.copy_log_btn)
         
-        # 6. フッターエリア（最下部固定）
         footer = BoxLayout(orientation='horizontal', size_hint_y=0.08, spacing=10)
         
         self.policy_btn = Button(
@@ -219,7 +264,7 @@ class MainLayout(BoxLayout):
             
             dummy_file = "test.jpg"
             if not os.path.exists(dummy_file):
-                img = Image.new('RGB', (100, 100), color = (73, 109, 137))
+                img = Image.new('RGB', (100, 100), color=(73, 109, 137))
                 img.save(dummy_file)
                 self.write_log("[DEBUG] テスト用のダミー画像 'test.jpg' を作成しました")
             
@@ -235,70 +280,54 @@ class MainLayout(BoxLayout):
         self.status_label.text = f"準備中... (0 / {len(selection)})"
         self.write_log(f"[INFO] {len(selection)}個のファイルが選択されました。処理を開始します...")
         
-        threading.Thread(
+        # 画面復帰アニメーションを完了させるため、1フレーム（0.2秒）遅らせてバックグラウンド処理を起動
+        Clock.schedule_once(lambda dt: threading.Thread(
             target=self.compress_multiple_files_thread, 
             args=(selection,), 
             daemon=True
-        ).start()
+        ).start(), 0.2)
 
     def compress_multiple_files_thread(self, file_paths):
         img_count = 0
         video_count = 0
         total_files = len(file_paths)
+        app = App.get_running_app()
         
+        # アプリ安全領域（内部/外部アプリ用ストレージ）のパスを設定
         if platform == "android":
-            try:
-                from jnius import autoclass
-                Environment = autoclass('android.os.Environment')
-                download_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
-            except Exception as e:
-                download_dir = App.get_running_app().user_data_dir
-                self.write_log(f"[WARN] Android外部ストレージ取得失敗、アプリ領域を使用: {e}")
+            out_folder = os.path.join(app.user_data_dir, "PapaAlbum_Output")
+            cache_dir = app.user_data_dir
         else:
-            download_dir = "./"
+            out_folder = "./PapaAlbum_Output"
+            cache_dir = "./"
 
-        for index, input_path in enumerate(file_paths, start=1):
+        os.makedirs(out_folder, exist_ok=True)
+
+        for index, raw_input_path in enumerate(file_paths, start=1):
             Clock.schedule_once(
                 lambda dt, idx=index: self.update_status(f"パパ頑張り中... ({idx} / {total_files})")
             )
             
-            if not input_path or os.path.isdir(input_path):
+            if not raw_input_path:
                 continue
                 
-            try:
-                input_path_obj = pathlib.Path(input_path)
-                parent_folder_name = input_path_obj.parent.name
-                
-                if not parent_folder_name:
-                    parent_folder_name = "Media"
-                    
-                out_folder = os.path.join(download_dir, f"{parent_folder_name}_PapaAlbum")
-                os.makedirs(out_folder, exist_ok=True)
-            except Exception as e:
-                self.write_log(f"[ERROR] フォルダ作成失敗 {input_path}: {e}")
-                continue
-                
-            ext = input_path_obj.suffix.lower()
-            filename = input_path_obj.name
-            output_path = os.path.join(out_folder, filename)
+            # content:// URI の場合、一時キャッシュに複製
+            working_path, original_filename = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
-                timestamp = os.path.getmtime(input_path)
+                input_path_obj = pathlib.Path(working_path)
+                filename = original_filename if original_filename else input_path_obj.name
+                ext = pathlib.Path(filename).suffix.lower()
+                output_path = os.path.join(out_folder, filename)
                 
                 if ext in [".jpg", ".jpeg", ".png"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
-                    with Image.open(input_path) as img:
-                        # 1. 元画像からExifデータを取得（位置情報や撮影設定等が含まれる）
+                    with Image.open(working_path) as img:
                         exif_data = img.info.get("exif")
-                        
-                        # 2. ExifのOrientationタグに基づいて画像を物理的に正しく回転補正
                         img = ImageOps.exif_transpose(img)
-                        
-                        # 3. リサイズ（アスペクト比維持）
                         img.thumbnail((3000, 3000))
                         
-                        # 4. 保存処理（Exifデータを保持したまま書き出し）
                         save_kwargs = {}
                         if exif_data:
                             save_kwargs["exif"] = exif_data
@@ -308,23 +337,28 @@ class MainLayout(BoxLayout):
                         else:
                             img.save(output_path, **save_kwargs)
                         
-                    os.utime(output_path, (timestamp, timestamp))
                     img_count += 1
                     self.write_log(f"[SUCCESS] 保存完了: {output_path}")
                     
                 elif ext in [".mp4", ".mov", ".m4v"]:
                     self.write_log(f"[PROCESSING] 動画コピー中: {filename}")
-                    shutil.copy2(input_path, output_path)
-                    os.utime(output_path, (timestamp, timestamp))
+                    shutil.copy2(working_path, output_path)
                     video_count += 1
                     self.write_log(f"[SUCCESS] コピー完了: {output_path}")
                     
             except Exception as e:
-                self.write_log(f"[ERROR] 処理失敗 {filename}: {e}")
+                self.write_log(f"[ERROR] 処理失敗 {raw_input_path}: {e}")
+            finally:
+                # content:// URI の一時コピーファイルを削除
+                if raw_input_path.startswith("content://") and os.path.exists(working_path):
+                    try:
+                        os.remove(working_path)
+                    except Exception:
+                        pass
                     
         total = img_count + video_count
         if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！"
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n保存先: {out_folder}"
         else:
             result_text = "ファイルの処理に失敗しました。"
             
@@ -337,6 +371,7 @@ class MainLayout(BoxLayout):
     def enable_button(self):
         self.select_btn.disabled = False
 
+
 class PapaAlbumApp(App):
     def build(self):
         return MainLayout()
@@ -346,7 +381,6 @@ class PapaAlbumApp(App):
         if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
             self.show_disclaimer_popup()
             
-        # Android起動時に外部ストレージの読み書き権限を要求
         if platform == "android":
             try:
                 from android.permissions import request_permissions, Permission
@@ -411,6 +445,7 @@ class PapaAlbumApp(App):
 
         agree_btn.bind(on_press=on_agree)
         popup.open()
+
 
 if __name__ == "__main__":
     PapaAlbumApp().run()
