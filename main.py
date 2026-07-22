@@ -1,3 +1,10 @@
+import os
+import pathlib
+import shutil
+import threading
+import webbrowser
+from PIL import Image, ImageOps
+
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -10,13 +17,6 @@ from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
 from kivy.storage.jsonstore import JsonStore
 from kivy.core.clipboard import Clipboard
-
-import os
-import pathlib
-import shutil
-import threading
-import webbrowser
-from PIL import Image, ImageOps
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
@@ -47,7 +47,6 @@ def get_real_path_or_copy(uri_str, cache_dir):
     """
     Androidの content:// URI から安全にファイルをコピーし、
     (一時パス, ファイル名, 元の親フォルダ名) を返す関数
-    ※重い処理のため必ずバックグラウンドスレッドから呼ぶこと
     """
     if not uri_str.startswith("content://"):
         parent_name = pathlib.Path(uri_str).parent.name
@@ -67,19 +66,19 @@ def get_real_path_or_copy(uri_str, cache_dir):
             filename = "temp_media_file"
             parent_folder_name = "Media"
             
-            # --- メタデータからファイル名と元フォルダ名を取得 ---
+            # メタデータからファイル名と元フォルダ名を取得
             try:
                 MediaStore = autoclass('android.provider.MediaStore')
                 projection = [MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DISPLAY_NAME]
                 cursor = resolver.query(uri, projection, None, None, None)
                 
                 if cursor is not None and cursor.moveToFirst():
-                    # 表示名（ファイル名）の取得
                     name_index = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
                     if name_index != -1:
-                        filename = cursor.getString(name_index)
+                        fetched_name = cursor.getString(name_index)
+                        if fetched_name:
+                            filename = fetched_name
                     
-                    # DATA 列（元パス）から親フォルダ名を抽出
                     data_index = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
                     if data_index != -1:
                         real_path = cursor.getString(data_index)
@@ -90,10 +89,13 @@ def get_real_path_or_copy(uri_str, cache_dir):
             except Exception as e:
                 print(f"Failed to query MediaStore metadata: {e}")
 
-            # --- キャッシュディレクトリへ一時コピー ---
+            # キャッシュディレクトリへ一時コピー
             temp_path = os.path.join(cache_dir, filename)
             
             input_stream = resolver.openInputStream(uri)
+            if input_stream is None:
+                raise IOError("openInputStream returned None")
+
             FileOutputStream = autoclass('java.io.FileOutputStream')
             output_stream = FileOutputStream(temp_path)
             
@@ -266,7 +268,13 @@ class MainLayout(BoxLayout):
         if platform == "android":
             try:
                 from jnius import autoclass
-                from android.activity import bind
+                from android.activity import bind, unbind
+                
+                # 二重登録を防ぐために一度解除
+                try:
+                    unbind(on_activity_result=self.on_activity_result)
+                except Exception:
+                    pass
                 
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
@@ -312,7 +320,6 @@ class MainLayout(BoxLayout):
                         selected_uris.append(data_uri.toString())
                 
                 if selected_uris:
-                    # メインスレッドを即解放するため、別スレッドで処理を開始する
                     threading.Thread(
                         target=self.process_selected_files_thread,
                         args=(selected_uris,),
@@ -326,8 +333,7 @@ class MainLayout(BoxLayout):
                 self.write_log("[INFO] ファイル選択がキャンセルされました")
 
     def process_selected_files_thread(self, file_paths):
-        """ファイル選択後のすべての重い処理（準備〜圧縮）を行うスレッド"""
-        # UI状態の更新は Clock を経由
+        """ファイル選択後の処理（圧縮・保存）"""
         Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
         
         img_count = 0
@@ -345,7 +351,6 @@ class MainLayout(BoxLayout):
             if not raw_input_path:
                 continue
                 
-            # 重いファイルコピー処理もバックグラウンドで実行
             working_path, original_filename, parent_folder_name = get_real_path_or_copy(raw_input_path, cache_dir)
             
             try:
@@ -361,22 +366,19 @@ class MainLayout(BoxLayout):
                 
                 output_path = os.path.join(target_out_dir, filename)
                 
-                if ext in [".jpg", ".jpeg", ".png"]:
+                if ext in [".jpg", ".jpeg", ".png", ".webp"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
                     with Image.open(working_path) as img:
-                        exif_data = img.getexif()
+                        # 画像の向き（Exif Orientation）補正
                         img = ImageOps.exif_transpose(img)
                         img.thumbnail((3000, 3000))
                         
-                        save_kwargs = {}
-                        if exif_data:
-                            save_kwargs["exif"] = exif_data
-                            
                         if ext in [".jpg", ".jpeg"]:
-                            img.save(output_path, "JPEG", quality=85, **save_kwargs)
+                            # 向き補正済みの画像を保存（回転情報の二重適用を防ぐためexifの再指定は行わない）
+                            img.save(output_path, "JPEG", quality=85, optimize=True)
                         else:
-                            img.save(output_path, **save_kwargs)
+                            img.save(output_path, optimize=True)
                         
                     img_count += 1
                     self.write_log(f"[SUCCESS] 保存完了: {output_path}")
@@ -406,7 +408,6 @@ class MainLayout(BoxLayout):
         Clock.schedule_once(lambda dt: self.enable_button())
 
     def _prepare_processing_ui(self, count):
-        """処理開始時のUI状態リセット（メインスレッド実行）"""
         self.select_btn.disabled = True
         self.status_label.text = f"準備中... (0 / {count})"
         self.write_log(f"[INFO] {count}個のファイルが選択されました。処理を開始します...")
@@ -430,9 +431,10 @@ class PapaAlbumApp(App):
         if platform == "android":
             try:
                 from android.permissions import request_permissions, Permission
+                # Android 13/14 向けのアクセス権限の要求
                 request_permissions([
-                    Permission.READ_EXTERNAL_STORAGE,
-                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.READ_MEDIA_IMAGES,
+                    Permission.READ_MEDIA_VIDEO,
                     Permission.ACCESS_MEDIA_LOCATION
                 ])
             except Exception as e:
