@@ -2,7 +2,9 @@ import os
 import pathlib
 import shutil
 import threading
+import time
 import webbrowser
+from datetime import datetime
 from PIL import Image, ImageOps
 
 from kivy.app import App
@@ -115,6 +117,20 @@ def get_real_path_or_copy(uri_str, cache_dir):
             return uri_str, None, "Media"
             
     return uri_str, pathlib.Path(uri_str).name, "Media"
+
+
+def get_exif_mtime(img, fallback_mtime):
+    """画像からExif撮影日時を取得しタイムスタンプ(epoch sec)で返す。取得不可ならfallback_mtimeを返す"""
+    try:
+        exif = img.getexif()
+        # 36867 = DateTimeOriginal, 306 = DateTime
+        date_str = exif.get(36867) or exif.get(306)
+        if date_str:
+            dt = datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
+            return dt.timestamp()
+    except Exception:
+        pass
+    return fallback_mtime
 
 
 class MainLayout(BoxLayout):
@@ -369,16 +385,23 @@ class MainLayout(BoxLayout):
                 if ext in [".jpg", ".jpeg", ".png", ".webp"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
+                    fallback_mtime = os.path.getmtime(working_path)
+                    
                     with Image.open(working_path) as img:
+                        # Exifから撮影日時を取得（取得不可なら元ファイルの更新日付）
+                        target_mtime = get_exif_mtime(img, fallback_mtime)
+                        
                         # 画像の向き（Exif Orientation）補正
                         img = ImageOps.exif_transpose(img)
                         img.thumbnail((3000, 3000))
                         
                         if ext in [".jpg", ".jpeg"]:
-                            # 向き補正済みの画像を保存（回転情報の二重適用を防ぐためexifの再指定は行わない）
                             img.save(output_path, "JPEG", quality=85, optimize=True)
                         else:
                             img.save(output_path, optimize=True)
+                    
+                    # 新規作成したファイルに元のタイムスタンプ（更新日時・アクセス日時）を適用
+                    os.utime(output_path, (target_mtime, target_mtime))
                         
                     img_count += 1
                     self.write_log(f"[SUCCESS] 保存完了: {output_path}")
