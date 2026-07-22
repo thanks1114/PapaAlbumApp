@@ -97,7 +97,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
             FileOutputStream = autoclass('java.io.FileOutputStream')
             output_stream = FileOutputStream(temp_path)
             
-            buffer = bytearray(1024 * 64)
+            buffer = bytearray(1024 * 1024)
             while True:
                 bytes_read = input_stream.read(buffer)
                 if bytes_read <= 0:
