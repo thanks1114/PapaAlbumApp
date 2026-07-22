@@ -89,6 +89,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     if data_index != -1:
                         real_path = cursor.getString(data_index)
                         if real_path:
+                            # 元ファイルの親フォルダ名を取得
                             parent_folder_name = pathlib.Path(real_path).parent.name
                             
                     cursor.close()
@@ -133,7 +134,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
             print(f"Failed to copy content URI: {e}")
             return None, None, "Media"
             
-    return uri_str, pathlib.Path(uri_str).name, "Media"
+    return uri_str, pathlib.Path(uri_str).name, pathlib.Path(uri_str).parent.name
 
 
 def get_exif_mtime(img, fallback_mtime):
@@ -393,9 +394,11 @@ class MainLayout(BoxLayout):
                 continue
 
             try:
+                # 元フォルダ名が取得できない場合のフォールバック設定
                 if not parent_folder_name or parent_folder_name in ["/", "\\", "."]:
                     parent_folder_name = "Media"
 
+                # 出力先フォルダ名を「元フォルダ名_PapaAlbum」に動的変更
                 out_folder_name = f"{parent_folder_name}_PapaAlbum"
                 target_out_dir = os.path.join(base_download_dir, out_folder_name)
                 os.makedirs(target_out_dir, exist_ok=True)
@@ -450,7 +453,7 @@ class MainLayout(BoxLayout):
                     
         total = img_count + video_count
         if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\nダウンロードフォルダに保存しました。"
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n「元フォルダ名_PapaAlbum」フォルダに保存しました。"
         else:
             result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
             
