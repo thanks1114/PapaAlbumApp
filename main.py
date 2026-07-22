@@ -19,6 +19,7 @@ from kivy.graphics import Color, Rectangle
 from kivy.clock import Clock
 from kivy.storage.jsonstore import JsonStore
 from kivy.core.clipboard import Clipboard
+from kivy.core.window import Window
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
@@ -68,6 +69,9 @@ def get_real_path_or_copy(uri_str, cache_dir):
             filename = "temp_media_file"
             parent_folder_name = "Media"
             
+            # MIMEタイプ取得（拡張子補完用）
+            mime_type = resolver.getType(uri)
+            
             # メタデータからファイル名と元フォルダ名を取得
             try:
                 MediaStore = autoclass('android.provider.MediaStore')
@@ -90,6 +94,19 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     cursor.close()
             except Exception as e:
                 print(f"Failed to query MediaStore metadata: {e}")
+
+            # 拡張子がない場合の補完処理
+            if not pathlib.Path(filename).suffix and mime_type:
+                if "jpeg" in mime_type or "jpg" in mime_type:
+                    filename += ".jpg"
+                elif "png" in mime_type:
+                    filename += ".png"
+                elif "webp" in mime_type:
+                    filename += ".webp"
+                elif "mp4" in mime_type:
+                    filename += ".mp4"
+                elif "quicktime" in mime_type or "mov" in mime_type:
+                    filename += ".mov"
 
             # キャッシュディレクトリへ一時コピー
             temp_path = os.path.join(cache_dir, filename)
@@ -114,7 +131,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
             return temp_path, filename, parent_folder_name
         except Exception as e:
             print(f"Failed to copy content URI: {e}")
-            return uri_str, None, "Media"
+            return None, None, "Media"
             
     return uri_str, pathlib.Path(uri_str).name, "Media"
 
@@ -139,6 +156,9 @@ class MainLayout(BoxLayout):
         self.orientation = 'vertical'
         self.padding = 20
         self.spacing = 15
+        
+        # ウインドウリサイズ時の描画安定化
+        Window.bind(on_resize=lambda *args: Window.canvas.ask_update())
         
         with self.canvas.before:
             Color(*COLOR_BG)
@@ -286,7 +306,6 @@ class MainLayout(BoxLayout):
                 from jnius import autoclass
                 from android.activity import bind, unbind
                 
-                # 二重登録を防ぐために一度解除
                 try:
                     unbind(on_activity_result=self.on_activity_result)
                 except Exception:
@@ -369,6 +388,10 @@ class MainLayout(BoxLayout):
                 
             working_path, original_filename, parent_folder_name = get_real_path_or_copy(raw_input_path, cache_dir)
             
+            if not working_path or working_path.startswith("content://"):
+                self.write_log(f"[ERROR] ファイルの取得・コピーに失敗しました: {raw_input_path}")
+                continue
+
             try:
                 if not parent_folder_name or parent_folder_name in ["/", "\\", "."]:
                     parent_folder_name = "Media"
@@ -382,16 +405,16 @@ class MainLayout(BoxLayout):
                 
                 output_path = os.path.join(target_out_dir, filename)
                 
+                try:
+                    fallback_mtime = os.path.getmtime(working_path)
+                except Exception:
+                    fallback_mtime = time.time()
+                
                 if ext in [".jpg", ".jpeg", ".png", ".webp"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
                     
-                    fallback_mtime = os.path.getmtime(working_path)
-                    
                     with Image.open(working_path) as img:
-                        # Exifから撮影日時を取得（取得不可なら元ファイルの更新日付）
                         target_mtime = get_exif_mtime(img, fallback_mtime)
-                        
-                        # 画像の向き（Exif Orientation）補正
                         img = ImageOps.exif_transpose(img)
                         img.thumbnail((3000, 3000))
                         
@@ -400,8 +423,10 @@ class MainLayout(BoxLayout):
                         else:
                             img.save(output_path, optimize=True)
                     
-                    # 新規作成したファイルに元のタイムスタンプ（更新日時・アクセス日時）を適用
-                    os.utime(output_path, (target_mtime, target_mtime))
+                    try:
+                        os.utime(output_path, (target_mtime, target_mtime))
+                    except Exception as e:
+                        self.write_log(f"[WARNING] 日付の設定に失敗しました: {e}")
                         
                     img_count += 1
                     self.write_log(f"[SUCCESS] 保存完了: {output_path}")
@@ -411,9 +436,11 @@ class MainLayout(BoxLayout):
                     shutil.copy2(working_path, output_path)
                     video_count += 1
                     self.write_log(f"[SUCCESS] コピー完了: {output_path}")
+                else:
+                    self.write_log(f"[SKIP] 未対応のファイル形式です: {filename} (拡張子: {ext})")
                     
             except Exception as e:
-                self.write_log(f"[ERROR] 処理失敗 {raw_input_path}: {e}")
+                self.write_log(f"[ERROR] 処理失敗 {filename}: {e}")
             finally:
                 if raw_input_path.startswith("content://") and os.path.exists(working_path):
                     try:
@@ -425,7 +452,7 @@ class MainLayout(BoxLayout):
         if total > 0:
             result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\nダウンロードフォルダに保存しました。"
         else:
-            result_text = "ファイルの処理に失敗しました。"
+            result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
             
         Clock.schedule_once(lambda dt: self.update_status(result_text))
         Clock.schedule_once(lambda dt: self.enable_button())
@@ -454,7 +481,6 @@ class PapaAlbumApp(App):
         if platform == "android":
             try:
                 from android.permissions import request_permissions, Permission
-                # Android 13/14 向けのアクセス権限の要求
                 request_permissions([
                     Permission.READ_MEDIA_IMAGES,
                     Permission.READ_MEDIA_VIDEO,
