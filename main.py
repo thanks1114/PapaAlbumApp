@@ -236,22 +236,42 @@ def compress_video_av1(input_path, output_path):
     if not FFMPEG_PATH:
         raise FileNotFoundError("FFmpeg バイナリパスが初期化されていません")
     
+    # 依存ライブラリ(.so)を探せるよう Android の nativeLibraryDir を LD_LIBRARY_PATH に設定
+    env = os.environ.copy()
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            lib_dir = PythonActivity.mActivity.getApplicationInfo().nativeLibraryDir
+            env["LD_LIBRARY_PATH"] = lib_dir
+        except Exception as e:
+            print(f"[WARNING] LD_LIBRARY_PATH 設定失敗: {e}")
+
     cmd = [
         FFMPEG_PATH, "-y",
         "-i", input_path,
         "-vcodec", "libsvtav1",
         "-crf", "32",
         "-preset", "8",
+        "-threads", "2",  # モバイル端末のOOM(クラッシュ)防止用の制限
         "-acodec", "aac",
         "-b:a", "128k",
         "-map_metadata", "0",
         "-movflags", "+faststart",
         output_path
     ]
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    process = subprocess.Popen(
+        cmd, 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.PIPE, 
+        env=env
+    )
     stdout, stderr = process.communicate()
+    
     if process.returncode != 0:
-        raise RuntimeError(f"FFmpeg Error: {stderr.decode('utf-8', errors='ignore')}")
+        err_msg = stderr.decode('utf-8', errors='ignore')
+        raise RuntimeError(f"FFmpeg Error (code {process.returncode}): {err_msg}")
 
 
 class MainLayout(BoxLayout):
