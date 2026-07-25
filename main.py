@@ -3,6 +3,7 @@ import pathlib
 import shutil
 import threading
 import time
+import subprocess
 import webbrowser
 from datetime import datetime
 from PIL import Image, ImageOps
@@ -20,6 +21,9 @@ from kivy.clock import Clock
 from kivy.storage.jsonstore import JsonStore
 from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
+
+# 画像のExif（位置情報・GPS・撮影日時など）を保持して保存するためのライブラリ
+import piexif
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
@@ -46,6 +50,58 @@ COLOR_PRIMARY = (0.90, 0.58, 0.39, 1)
 COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
 
 
+def load_native_libraries():
+    """
+    Androidの動的リンカーに合わせて、依存関係順に.soを事前ロードする
+    """
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            System = autoclass('java.lang.System')
+            
+            # 1. 外部依存・最下層ユーティリティ
+            System.loadLibrary("SvtAv1Enc")
+            System.loadLibrary("avutil")
+            
+            # 2. 中間処理（リサンプル・コーデック・スケーラー）
+            System.loadLibrary("swresample")
+            System.loadLibrary("avcodec")
+            System.loadLibrary("swscale")
+            
+            # 3. 高次処理（フォーマット・フィルター）
+            System.loadLibrary("avformat")
+            System.loadLibrary("avfilter")
+            
+            print("[INFO] 全ネイティブライブラリ(.so)のロードに成功しました")
+        except Exception as e:
+            print(f"[ERROR] ネイティブライブラリのロードに失敗しました: {e}")
+
+
+def get_ffmpeg_path():
+    """
+    Androidのネイティブライブラリ領域(nativeLibraryDir)に配備された
+    カスタムFFmpegバイナリのパスを取得し実行権限を付与する
+    """
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            
+            # APK展開後のネイティブライブラリディレクトリを取得
+            lib_dir = activity.getApplicationInfo().nativeLibraryDir
+            ffmpeg_path = os.path.join(lib_dir, "libffmpeg.so")
+            
+            if os.path.exists(ffmpeg_path):
+                # 実行権限を念のため与える (chmod +x)
+                os.chmod(ffmpeg_path, 0o755)
+                return ffmpeg_path
+        except Exception as e:
+            print(f"Failed to locate native ffmpeg: {e}")
+            
+    return "ffmpeg"  # 非Androidまたはローカル環境でのフォールバック
+
+
 def get_real_path_or_copy(uri_str, cache_dir):
     """
     Androidの content:// URI から安全にファイルをコピーし、
@@ -69,10 +125,8 @@ def get_real_path_or_copy(uri_str, cache_dir):
             filename = "temp_media_file"
             parent_folder_name = "Media"
             
-            # MIMEタイプ取得（拡張子補完用）
             mime_type = resolver.getType(uri)
             
-            # メタデータからファイル名と元フォルダ名を取得
             try:
                 MediaStore = autoclass('android.provider.MediaStore')
                 projection = [MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DISPLAY_NAME]
@@ -89,14 +143,12 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     if data_index != -1:
                         real_path = cursor.getString(data_index)
                         if real_path:
-                            # 元ファイルの親フォルダ名を取得
                             parent_folder_name = pathlib.Path(real_path).parent.name
                             
                     cursor.close()
             except Exception as e:
                 print(f"Failed to query MediaStore metadata: {e}")
 
-            # 拡張子がない場合の補完処理
             if not pathlib.Path(filename).suffix and mime_type:
                 if "jpeg" in mime_type or "jpg" in mime_type:
                     filename += ".jpg"
@@ -109,7 +161,6 @@ def get_real_path_or_copy(uri_str, cache_dir):
                 elif "quicktime" in mime_type or "mov" in mime_type:
                     filename += ".mov"
 
-            # キャッシュディレクトリへ一時コピー
             temp_path = os.path.join(cache_dir, filename)
             
             input_stream = resolver.openInputStream(uri)
@@ -134,14 +185,13 @@ def get_real_path_or_copy(uri_str, cache_dir):
             print(f"Failed to copy content URI: {e}")
             return None, None, "Media"
             
-    return uri_str, pathlib.Path(uri_str).name, pathlib.Path(uri_str).parent.name
+    return uri_str, pathlib.Path(uri_str).name, "Media"
 
 
 def get_exif_mtime(img, fallback_mtime):
-    """画像からExif撮影日時を取得しタイムスタンプ(epoch sec)で返す。取得不可ならfallback_mtimeを返す"""
+    """画像からExif撮影日時を取得しタイムスタンプ(epoch sec)で返す"""
     try:
         exif = img.getexif()
-        # 36867 = DateTimeOriginal, 306 = DateTime
         date_str = exif.get(36867) or exif.get(306)
         if date_str:
             dt = datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
@@ -151,6 +201,30 @@ def get_exif_mtime(img, fallback_mtime):
     return fallback_mtime
 
 
+def compress_video_av1(input_path, output_path):
+    """
+    FFmpegバイナリを用いたAV1(libsvtav1)動画エンコード処理
+    """
+    ffmpeg_bin = get_ffmpeg_path()
+    
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-i", input_path,
+        "-vcodec", "libsvtav1",     # AV1エンコーダー (SVT-AV1)
+        "-crf", "32",               # 画質・容量バランス設定
+        "-preset", "8",             # エンコード速度設定
+        "-acodec", "aac",
+        "-b:a", "128k",
+        "-map_metadata", "0",       # メタデータ（撮影日時・位置情報）の継承
+        "-movflags", "+faststart",
+        output_path
+    ]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(f"FFmpeg Error: {stderr.decode('utf-8', errors='ignore')}")
+
+
 class MainLayout(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -158,7 +232,6 @@ class MainLayout(BoxLayout):
         self.padding = 20
         self.spacing = 15
         
-        # ウインドウリサイズ時の描画安定化
         Window.bind(on_resize=lambda *args: Window.canvas.ask_update())
         
         with self.canvas.before:
@@ -167,7 +240,7 @@ class MainLayout(BoxLayout):
         self.bind(size=self._update_rect, pos=self._update_rect)
         
         self.title_label = Label(
-            text="PapaAlbum - パパの思い出写真圧縮",
+            text="PapaAlbum - パパの思い出写真・動画整理",
             font_size='20sp',
             bold=True,
             color=COLOR_TEXT,
@@ -255,7 +328,7 @@ class MainLayout(BoxLayout):
         self.policy_btn.bind(on_press=self.open_policy_url)
         
         version_label = Label(
-            text="ver 1.0.0",
+            text="ver 1.1.0",
             font_size='12sp',
             color=(0.6, 0.5, 0.4, 1),
             size_hint_x=0.3
@@ -369,7 +442,7 @@ class MainLayout(BoxLayout):
                 self.write_log("[INFO] ファイル選択がキャンセルされました")
 
     def process_selected_files_thread(self, file_paths):
-        """ファイル選択後の処理（圧縮・保存）"""
+        """ファイル選択後の処理（画像圧縮・Exif位置情報完全継承・AV1動画圧縮）"""
         Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
         
         img_count = 0
@@ -394,11 +467,9 @@ class MainLayout(BoxLayout):
                 continue
 
             try:
-                # 元フォルダ名が取得できない場合のフォールバック設定
                 if not parent_folder_name or parent_folder_name in ["/", "\\", "."]:
                     parent_folder_name = "Media"
 
-                # 出力先フォルダ名を「元フォルダ名_PapaAlbum」に動的変更
                 out_folder_name = f"{parent_folder_name}_PapaAlbum"
                 target_out_dir = os.path.join(base_download_dir, out_folder_name)
                 os.makedirs(target_out_dir, exist_ok=True)
@@ -413,18 +484,28 @@ class MainLayout(BoxLayout):
                 except Exception:
                     fallback_mtime = time.time()
                 
+                # --- 画像圧縮 & Exif（位置情報・撮影日時等）完全継承 ---
                 if ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                    self.write_log(f"[PROCESSING] 画像圧縮中: {filename}")
+                    self.write_log(f"[PROCESSING] 画像圧縮中 (位置情報/Exif維持): {filename}")
                     
+                    exif_bytes = None
+                    try:
+                        exif_bytes = piexif.dump(piexif.load(working_path))
+                    except Exception as e:
+                        self.write_log(f"[INFO] Exif抽出不可または非対応構造です: {e}")
+
                     with Image.open(working_path) as img:
                         target_mtime = get_exif_mtime(img, fallback_mtime)
                         img = ImageOps.exif_transpose(img)
                         img.thumbnail((3000, 3000))
                         
+                        save_kwargs = {"optimize": True}
                         if ext in [".jpg", ".jpeg"]:
-                            img.save(output_path, "JPEG", quality=85, optimize=True)
-                        else:
-                            img.save(output_path, optimize=True)
+                            save_kwargs["quality"] = 85
+                            if exif_bytes:
+                                save_kwargs["exif"] = exif_bytes
+
+                        img.save(output_path, **save_kwargs)
                     
                     try:
                         os.utime(output_path, (target_mtime, target_mtime))
@@ -434,11 +515,24 @@ class MainLayout(BoxLayout):
                     img_count += 1
                     self.write_log(f"[SUCCESS] 保存完了: {output_path}")
                     
+                # --- AV1動画圧縮 (失敗時は自動的に高速直接コピーへ移行) ---
                 elif ext in [".mp4", ".mov", ".m4v"]:
-                    self.write_log(f"[PROCESSING] 動画コピー中: {filename}")
-                    shutil.copy2(working_path, output_path)
+                    self.write_log(f"[PROCESSING] AV1動画圧縮中: {filename}")
+                    try:
+                        compress_video_av1(working_path, output_path)
+                        self.write_log(f"[SUCCESS] AV1圧縮完了: {output_path}")
+                    except Exception as video_err:
+                        self.write_log(f"[WARNING] AV1圧縮スキップ（直接コピーへ移行）: {video_err}")
+                        shutil.copy2(working_path, output_path)
+                        self.write_log(f"[SUCCESS] コピー完了: {output_path}")
+
+                    try:
+                        os.utime(output_path, (fallback_mtime, fallback_mtime))
+                    except Exception:
+                        pass
+
                     video_count += 1
-                    self.write_log(f"[SUCCESS] コピー完了: {output_path}")
+                    
                 else:
                     self.write_log(f"[SKIP] 未対応のファイル形式です: {filename} (拡張子: {ext})")
                     
@@ -453,7 +547,7 @@ class MainLayout(BoxLayout):
                     
         total = img_count + video_count
         if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n「元フォルダ名_PapaAlbum」フォルダに保存しました。"
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\nダウンロードフォルダに保存しました。"
         else:
             result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
             
@@ -477,6 +571,9 @@ class PapaAlbumApp(App):
         return MainLayout()
 
     def on_start(self):
+        # アプリ起動時にネイティブライブラリをロード
+        load_native_libraries()
+
         self.store = JsonStore('papaalbum_settings.json')
         if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
             self.show_disclaimer_popup()
