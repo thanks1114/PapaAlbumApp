@@ -61,14 +61,24 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install buildozer cython
 
+      # Android SDK ライセンスを事前に一括自動同意するステップ
+      - name: Accept Android SDK Licenses
+        run: |
+          mkdir -p ~/.buildozer/android/platform/android-sdk/licenses
+          yes | sdkmanager --sdk_root=/home/runner/.buildozer/android/platform/android-sdk --licenses || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
       - name: Build APK with Buildozer
         env:
-          # RunnerプリインストールのNDK(v27系)とのパス干渉を防止
+          # Runner プリインストールの NDK(v27系) とのパス干渉を防止
           ANDROID_NDK_ROOT: ""
           ANDROID_NDK_HOME: ""
           ANDROID_NDK_PATH: ""
+          # SDK ライセンスの自動受け入れ指示
+          ACCEPT_BUILD_TOOLS_CHECKSUMS: "true"
         run: |
-          buildozer -v android debug
+          # buildozer 実行時のライセンス問い合わせにも自動応答（yes）
+          yes | buildozer -v android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
