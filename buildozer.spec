@@ -16,7 +16,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,ttc,so
 
 # (list) Source files to include
-source.include_dirs = libs
+source.include_dirs = 
 
 # (str) Application versioning (method 1)
 version = 1.1.0
