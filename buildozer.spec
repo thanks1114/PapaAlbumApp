@@ -61,6 +61,8 @@ android.add_libs_arm64_v8a = libs/arm64-v8a/libSvtAv1Enc.so, libs/arm64-v8a/liba
 # (bool) Copy library instead of making a lib dir and symlinking on android
 android.copy_libs = 1
 
+android.manifest.application_arguments = android:requestLegacyExternalStorage="true"
+
 
 [buildozer]
 
@@ -69,3 +71,4 @@ log_level = 2
 
 # (int) Display warning if buildozer is run as root (0 = error, 1 = warning, 2 = ignore)
 warn_on_root = 1
+

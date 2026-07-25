@@ -105,12 +105,11 @@ def get_ffmpeg_path():
 def get_real_path_or_copy(uri_str, cache_dir):
     """
     Androidの content:// URI から安全にファイルをコピーし、
-    (一時パス, ファイル名, 元の親フォルダ名) を返す関数
+    (一時パス, ファイル名, 元の親フォルダの絶対パス) を返す関数
     """
     if not uri_str.startswith("content://"):
-        parent_name = pathlib.Path(uri_str).parent.name
-        filename = pathlib.Path(uri_str).name
-        return uri_str, filename, parent_name
+        path_obj = pathlib.Path(uri_str)
+        return uri_str, path_obj.name, str(path_obj.parent)
 
     if platform == "android":
         try:
@@ -123,7 +122,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
             resolver = context.getContentResolver()
             
             filename = "temp_media_file"
-            parent_folder_name = "Media"
+            original_parent_dir = None
             
             mime_type = resolver.getType(uri)
             
@@ -143,7 +142,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     if data_index != -1:
                         real_path = cursor.getString(data_index)
                         if real_path:
-                            parent_folder_name = pathlib.Path(real_path).parent.name
+                            original_parent_dir = str(pathlib.Path(real_path).parent)
                             
                     cursor.close()
             except Exception as e:
@@ -180,12 +179,13 @@ def get_real_path_or_copy(uri_str, cache_dir):
             input_stream.close()
             output_stream.close()
             
-            return temp_path, filename, parent_folder_name
+            return temp_path, filename, original_parent_dir
         except Exception as e:
             print(f"Failed to copy content URI: {e}")
-            return None, None, "Media"
+            return None, None, None
             
-    return uri_str, pathlib.Path(uri_str).name, "Media"
+    path_obj = pathlib.Path(uri_str)
+    return uri_str, path_obj.name, str(path_obj.parent)
 
 
 def get_exif_mtime(img, fallback_mtime):
@@ -449,7 +449,7 @@ class MainLayout(BoxLayout):
         video_count = 0
         total_files = len(file_paths)
         
-        base_download_dir = "/storage/emulated/0/Download"
+        default_download_dir = "/storage/emulated/0/Download"
         cache_dir = App.get_running_app().user_data_dir
 
         for index, raw_input_path in enumerate(file_paths, start=1):
@@ -460,18 +460,20 @@ class MainLayout(BoxLayout):
             if not raw_input_path:
                 continue
                 
-            working_path, original_filename, parent_folder_name = get_real_path_or_copy(raw_input_path, cache_dir)
+            working_path, original_filename, original_parent_dir = get_real_path_or_copy(raw_input_path, cache_dir)
             
             if not working_path or working_path.startswith("content://"):
                 self.write_log(f"[ERROR] ファイルの取得・コピーに失敗しました: {raw_input_path}")
                 continue
 
             try:
-                if not parent_folder_name or parent_folder_name in ["/", "\\", "."]:
-                    parent_folder_name = "Media"
+                # 元のフォルダー直下に「PapaAlbum」フォルダを作成
+                if original_parent_dir and os.path.exists(original_parent_dir):
+                    target_out_dir = os.path.join(original_parent_dir, "PapaAlbum")
+                else:
+                    # 元フォルダの絶対パスが取得できない場合はDownload直下のPapaAlbumに退避
+                    target_out_dir = os.path.join(default_download_dir, "PapaAlbum")
 
-                out_folder_name = f"{parent_folder_name}_PapaAlbum"
-                target_out_dir = os.path.join(base_download_dir, out_folder_name)
                 os.makedirs(target_out_dir, exist_ok=True)
 
                 filename = original_filename if original_filename else pathlib.Path(working_path).name
@@ -547,7 +549,7 @@ class MainLayout(BoxLayout):
                     
         total = img_count + video_count
         if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\nダウンロードフォルダに保存しました。"
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n元のフォルダ直下のPapaAlbumに保存しました。"
         else:
             result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
             
