@@ -117,7 +117,8 @@ def get_unique_target_path(target_dir, filename):
 
 def get_real_path_or_copy(uri_str, cache_dir):
     """
-    Androidの content:// URI から元ファイル名を取得し安全に処理用キャッシュへコピーする
+    Androidの content:// URI から元ファイル名を取得し、
+    ParcelFileDescriptor経由で安全に処理用キャッシュへコピーする
     """
     if not uri_str.startswith("content://"):
         path_obj = pathlib.Path(uri_str)
@@ -130,20 +131,22 @@ def get_real_path_or_copy(uri_str, cache_dir):
             context = PythonActivity.mActivity
             Uri = autoclass('android.net.Uri')
             
-            uri = Uri.parse(uri_str)
+            raw_uri = Uri.parse(uri_str)
+            uri = raw_uri
             
-            # GPS 位置情報マスキング解除
-            try:
-                MediaStore = autoclass('android.provider.MediaStore')
-                uri = MediaStore.setRequireOriginal(uri)
-            except Exception as gps_err:
-                print(f"setRequireOriginal not applied: {gps_err}")
+            # MediaStore URI の場合のみ Exif 位置情報オリジナルの取得を試みる
+            if "com.android.providers.media.documents" not in uri_str:
+                try:
+                    MediaStore = autoclass('android.provider.MediaStore')
+                    uri = MediaStore.setRequireOriginal(raw_uri)
+                except Exception as gps_err:
+                    uri = raw_uri
 
             resolver = context.getContentResolver()
             filename = None
             original_parent_dir = None
             
-            # OpenableColumns から元ファイル名を取得
+            # 1. OpenableColumns から元ファイル名を取得
             try:
                 OpenableColumns = autoclass('android.provider.OpenableColumns')
                 cursor = resolver.query(uri, None, None, None, None)
@@ -155,24 +158,25 @@ def get_real_path_or_copy(uri_str, cache_dir):
             except Exception as e:
                 print(f"Failed to query OpenableColumns: {e}")
 
-            # DATA カラムからパス取得（取得可能な場合）
-            try:
-                MediaStore = autoclass('android.provider.MediaStore')
-                projection = [MediaStore.MediaColumns.DATA]
-                cursor = resolver.query(uri, projection, None, None, None)
-                if cursor is not None and cursor.moveToFirst():
-                    data_index = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                    if data_index != -1:
-                        real_path = cursor.getString(data_index)
-                        if real_path and real_path.startswith("/"):
-                            original_parent_dir = str(pathlib.Path(real_path).parent)
-                            if not filename:
-                                filename = pathlib.Path(real_path).name
-                    cursor.close()
-            except Exception as e:
-                print(f"Failed to query MediaStore DATA: {e}")
+            # 2. MediaStore URI の場合のみ DATA カラムからのパス取得を試みる
+            if "com.android.providers.media.documents" not in uri_str:
+                try:
+                    MediaStore = autoclass('android.provider.MediaStore')
+                    projection = [MediaStore.MediaColumns.DATA]
+                    cursor = resolver.query(uri, projection, None, None, None)
+                    if cursor is not None and cursor.moveToFirst():
+                        data_index = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                        if data_index != -1:
+                            real_path = cursor.getString(data_index)
+                            if real_path and real_path.startswith("/"):
+                                original_parent_dir = str(pathlib.Path(real_path).parent)
+                                if not filename:
+                                    filename = pathlib.Path(real_path).name
+                        cursor.close()
+                except Exception as e:
+                    print(f"Failed to query MediaStore DATA: {e}")
 
-            # 取得できない場合のファイル名生成
+            # 3. 取得できない場合のユニークファイル名生成
             if not filename or filename == "temp_media_file":
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
                 filename = f"Media_{timestamp_str}"
@@ -193,26 +197,20 @@ def get_real_path_or_copy(uri_str, cache_dir):
 
             temp_path = get_unique_target_path(cache_dir, filename)
             
-            input_stream = resolver.openInputStream(uri)
-            if input_stream is None:
-                raise IOError("openInputStream returned None")
+            # ParcelFileDescriptor を使用した Python ネイティブファイル記述子による安全なストリームコピー
+            pfd = resolver.openFileDescriptor(uri, "r")
+            if pfd is None:
+                raise IOError("openFileDescriptor returned None")
 
-            FileOutputStream = autoclass('java.io.FileOutputStream')
-            output_stream = FileOutputStream(temp_path)
-            
-            buffer = bytearray(1024 * 1024)
-            while True:
-                bytes_read = input_stream.read(buffer)
-                if bytes_read <= 0:
-                    break
-                output_stream.write(buffer, 0, bytes_read)
-                
-            input_stream.close()
-            output_stream.close()
+            fd = pfd.getFd()
+            with open(fd, 'rb', closefd=False) as f_in:
+                with open(temp_path, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            pfd.close()
             
             return temp_path, pathlib.Path(temp_path).name, original_parent_dir
         except Exception as e:
-            print(f"Failed to copy content URI: {e}")
+            print(f"Failed to copy content URI ({uri_str}): {e}")
             return None, None, None
             
     path_obj = pathlib.Path(uri_str)
@@ -614,7 +612,7 @@ class PapaAlbumApp(App):
 
     def on_start(self):
         load_native_libraries()
-        init_ffmpeg_path()  # メインスレッド上でFFmpegパスを初期化
+        init_ffmpeg_path()
 
         self.store = JsonStore('papaalbum_settings.json')
         if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
