@@ -62,7 +62,7 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install buildozer cython
 
-      # Android Command-line Tools (sdkmanager) の初期準備とライセンス一括同意
+      # Android Command-line Tools のセットアップと互換エイリアス(tools)の作成
       - name: Setup Android SDK Command-line Tools
         run: |
           mkdir -p ~/.buildozer/android/platform/android-sdk/cmdline-tools
@@ -72,18 +72,20 @@ jobs:
           mv cmdline-tools latest
           rm cmdline-tools.zip
           
+          # Buildozer/p4a の旧パス判定(android-sdk/tools/bin/sdkmanager)を通過させるシンボリックリンク
+          cd ~/.buildozer/android/platform/android-sdk
+          ln -s cmdline-tools/latest tools
+          
           # SDKライセンスに一括事前同意
           yes | ~/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/home/runner/.buildozer/android/platform/android-sdk --licenses || true
 
       - name: Build APK with Buildozer
         env:
-          # Runner プリインストールの NDK(v27系) とのパス干渉を防止
           ANDROID_NDK_ROOT: ""
           ANDROID_NDK_HOME: ""
           ANDROID_NDK_PATH: ""
           ACCEPT_BUILD_TOOLS_CHECKSUMS: "true"
         run: |
-          # Broken Pipe を防ぐため単体で実行
           buildozer -v android debug
 
       - name: Upload APK Artifact
