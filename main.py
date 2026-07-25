@@ -22,8 +22,10 @@ from kivy.storage.jsonstore import JsonStore
 from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
 
-# 画像のExif（位置情報・GPS・撮影日時など）を保持して保存するためのライブラリ
 import piexif
+
+# --- グローバル変数 ---
+FFMPEG_PATH = None
 
 # --- 日本語フォントの登録 ---
 FONT_NAME = "ja_font"
@@ -50,38 +52,11 @@ COLOR_PRIMARY = (0.90, 0.58, 0.39, 1)
 COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
 
 
-def load_native_libraries():
+def init_ffmpeg_path():
     """
-    Androidの動的リンカーに合わせて、依存関係順に.soを事前ロードする
+    メインスレッド(JNI有効時)でネイティブFFmpegバイナリのパスを取得しキャッシュする
     """
-    if platform == "android":
-        try:
-            from jnius import autoclass
-            System = autoclass('java.lang.System')
-            
-            # 1. 外部依存・最下層ユーティリティ
-            System.loadLibrary("SvtAv1Enc")
-            System.loadLibrary("avutil")
-            
-            # 2. 中間処理（リサンプル・コーデック・スケーラー）
-            System.loadLibrary("swresample")
-            System.loadLibrary("avcodec")
-            System.loadLibrary("swscale")
-            
-            # 3. 高次処理（フォーマット・フィルター）
-            System.loadLibrary("avformat")
-            System.loadLibrary("avfilter")
-            
-            print("[INFO] 全ネイティブライブラリ(.so)のロードに成功しました")
-        except Exception as e:
-            print(f"[ERROR] ネイティブライブラリのロードに失敗しました: {e}")
-
-
-def get_ffmpeg_path():
-    """
-    Androidのネイティブライブラリ領域(nativeLibraryDir)に配備された
-    カスタムFFmpegバイナリのパスを取得し実行権限を付与する
-    """
+    global FFMPEG_PATH
     if platform == "android":
         try:
             from jnius import autoclass
@@ -89,20 +64,60 @@ def get_ffmpeg_path():
             activity = PythonActivity.mActivity
             
             lib_dir = activity.getApplicationInfo().nativeLibraryDir
-            ffmpeg_path = os.path.join(lib_dir, "libffmpeg.so")
+            ffmpeg_so = os.path.join(lib_dir, "libffmpeg.so")
             
-            if os.path.exists(ffmpeg_path):
-                os.chmod(ffmpeg_path, 0o755)
-                return ffmpeg_path
+            if os.path.exists(ffmpeg_so):
+                try:
+                    os.chmod(ffmpeg_so, 0o755)
+                except Exception:
+                    pass
+                FFMPEG_PATH = ffmpeg_so
+                print(f"[INFO] Native FFmpeg resolved: {FFMPEG_PATH}")
+            else:
+                print(f"[WARNING] libffmpeg.so not found in {lib_dir}")
         except Exception as e:
-            print(f"Failed to locate native ffmpeg: {e}")
+            print(f"[ERROR] Failed to initialize FFmpeg path: {e}")
+    else:
+        FFMPEG_PATH = "ffmpeg"
+
+
+def load_native_libraries():
+    """Androidの動的リンカーに合わせて、依存関係順に.soを事前ロードする"""
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            System = autoclass('java.lang.System')
             
-    return "ffmpeg"
+            System.loadLibrary("SvtAv1Enc")
+            System.loadLibrary("avutil")
+            System.loadLibrary("swresample")
+            System.loadLibrary("avcodec")
+            System.loadLibrary("swscale")
+            System.loadLibrary("avformat")
+            System.loadLibrary("avfilter")
+            print("[INFO] 全ネイティブライブラリ(.so)のロードに成功しました")
+        except Exception as e:
+            print(f"[ERROR] ネイティブライブラリのロードに失敗しました: {e}")
+
+
+def get_unique_target_path(target_dir, filename):
+    """
+    同名ファイルが存在する場合に連番(例: photo_1.jpg)を付与して上書きを阻止する
+    """
+    base_name, ext = os.path.splitext(filename)
+    counter = 1
+    target_path = os.path.join(target_dir, filename)
+    
+    while os.path.exists(target_path):
+        target_path = os.path.join(target_dir, f"{base_name}_{counter}{ext}")
+        counter += 1
+        
+    return target_path
 
 
 def get_real_path_or_copy(uri_str, cache_dir):
     """
-    Androidの content:// URI から確実な元ファイル名を取得し安全にコピーする
+    Androidの content:// URI から元ファイル名を取得し安全に処理用キャッシュへコピーする
     """
     if not uri_str.startswith("content://"):
         path_obj = pathlib.Path(uri_str)
@@ -116,12 +131,19 @@ def get_real_path_or_copy(uri_str, cache_dir):
             Uri = autoclass('android.net.Uri')
             
             uri = Uri.parse(uri_str)
-            resolver = context.getContentResolver()
             
+            # GPS 位置情報マスキング解除
+            try:
+                MediaStore = autoclass('android.provider.MediaStore')
+                uri = MediaStore.setRequireOriginal(uri)
+            except Exception as gps_err:
+                print(f"setRequireOriginal not applied: {gps_err}")
+
+            resolver = context.getContentResolver()
             filename = None
             original_parent_dir = None
             
-            # --- 1. OpenableColumns からファイル名を取得 ---
+            # OpenableColumns から元ファイル名を取得
             try:
                 OpenableColumns = autoclass('android.provider.OpenableColumns')
                 cursor = resolver.query(uri, None, None, None, None)
@@ -133,7 +155,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
             except Exception as e:
                 print(f"Failed to query OpenableColumns: {e}")
 
-            # --- 2. DATA カラムから実際のファイルパスを取得（取得可能な場合） ---
+            # DATA カラムからパス取得（取得可能な場合）
             try:
                 MediaStore = autoclass('android.provider.MediaStore')
                 projection = [MediaStore.MediaColumns.DATA]
@@ -150,9 +172,9 @@ def get_real_path_or_copy(uri_str, cache_dir):
             except Exception as e:
                 print(f"Failed to query MediaStore DATA: {e}")
 
-            # バックアップファイル名設定
+            # 取得できない場合のファイル名生成
             if not filename or filename == "temp_media_file":
-                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
                 filename = f"Media_{timestamp_str}"
 
             # 拡張子の補正
@@ -169,7 +191,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
                 elif "quicktime" in mime_type or "mov" in mime_type:
                     filename += ".mov"
 
-            temp_path = os.path.join(cache_dir, filename)
+            temp_path = get_unique_target_path(cache_dir, filename)
             
             input_stream = resolver.openInputStream(uri)
             if input_stream is None:
@@ -188,7 +210,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
             input_stream.close()
             output_stream.close()
             
-            return temp_path, filename, original_parent_dir
+            return temp_path, pathlib.Path(temp_path).name, original_parent_dir
         except Exception as e:
             print(f"Failed to copy content URI: {e}")
             return None, None, None
@@ -211,13 +233,13 @@ def get_exif_mtime(img, fallback_mtime):
 
 
 def compress_video_av1(input_path, output_path):
-    """
-    FFmpegバイナリを用いたAV1(libsvtav1)動画エンコード処理
-    """
-    ffmpeg_bin = get_ffmpeg_path()
+    """FFmpegバイナリを用いたAV1(libsvtav1)動画エンコード処理"""
+    global FFMPEG_PATH
+    if not FFMPEG_PATH:
+        raise FileNotFoundError("FFmpeg バイナリパスが初期化されていません")
     
     cmd = [
-        ffmpeg_bin, "-y",
+        FFMPEG_PATH, "-y",
         "-i", input_path,
         "-vcodec", "libsvtav1",
         "-crf", "32",
@@ -451,7 +473,7 @@ class MainLayout(BoxLayout):
                 self.write_log("[INFO] ファイル選択がキャンセルされました")
 
     def process_selected_files_thread(self, file_paths):
-        """ファイル選択後の処理（画像圧縮・Exif位置情報完全継承・AV1動画圧縮）"""
+        """ファイル選択後の処理（画像圧縮・Exif位置情報継承・回転補正・連番生成・動画処理）"""
         Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
         
         img_count = 0
@@ -493,22 +515,26 @@ class MainLayout(BoxLayout):
                 filename = original_filename if original_filename else pathlib.Path(working_path).name
                 ext = pathlib.Path(filename).suffix.lower()
                 
-                output_path = os.path.join(target_out_dir, filename)
+                output_path = get_unique_target_path(target_out_dir, filename)
                 
                 try:
                     fallback_mtime = os.path.getmtime(working_path)
                 except Exception:
                     fallback_mtime = time.time()
                 
-                # --- 画像圧縮 & Exif（位置情報・撮影日時等）完全継承 ---
+                # --- 画像圧縮 & Exif（位置情報・GPS等）継承 ---
                 if ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                    self.write_log(f"[PROCESSING] 画像圧縮中 ({filename})")
+                    self.write_log(f"[PROCESSING] 画像圧縮中 ({pathlib.Path(output_path).name})")
                     
                     exif_bytes = None
-                    try:
-                        exif_bytes = piexif.dump(piexif.load(working_path))
-                    except Exception as e:
-                        self.write_log(f"[INFO] Exif抽出制限: {e}")
+                    if ext in [".jpg", ".jpeg"]:
+                        try:
+                            exif_dict = piexif.load(working_path)
+                            if "0th" in exif_dict and piexif.ImageIFD.Orientation in exif_dict["0th"]:
+                                exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+                            exif_bytes = piexif.dump(exif_dict)
+                        except Exception as e:
+                            self.write_log(f"[INFO] Exif抽出・補正スキップ: {e}")
 
                     with Image.open(working_path) as img:
                         target_mtime = get_exif_mtime(img, fallback_mtime)
@@ -531,9 +557,9 @@ class MainLayout(BoxLayout):
                     img_count += 1
                     self.write_log(f"[SUCCESS] 保存完了: {output_path}")
                     
-                # --- AV1動画圧縮 (失敗時は直接コピー) ---
+                # --- 動画処理 (AV1圧縮 or 直接コピー) ---
                 elif ext in [".mp4", ".mov", ".m4v"]:
-                    self.write_log(f"[PROCESSING] AV1動画圧縮中: {filename}")
+                    self.write_log(f"[PROCESSING] AV1動画圧縮中: {pathlib.Path(output_path).name}")
                     try:
                         compress_video_av1(working_path, output_path)
                         self.write_log(f"[SUCCESS] AV1圧縮完了: {output_path}")
@@ -563,7 +589,7 @@ class MainLayout(BoxLayout):
                     
         total = img_count + video_count
         if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n/DCIM/PapaAlbum フォルダ等に保存されました。"
+            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n/PapaAlbum フォルダ等に保存されました。"
         else:
             result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
             
@@ -588,6 +614,7 @@ class PapaAlbumApp(App):
 
     def on_start(self):
         load_native_libraries()
+        init_ffmpeg_path()  # メインスレッド上でFFmpegパスを初期化
 
         self.store = JsonStore('papaalbum_settings.json')
         if not self.store.exists('user_agreement') or not self.store.get('user_agreement')['accepted']:
