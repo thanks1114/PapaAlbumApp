@@ -56,7 +56,7 @@ android.archs = arm64-v8a
 
 # (list) Native libraries to include (.so)
 # 分割された7つの実体ライブラリをカンマ区切りで指定
-android.add_libs_arm64_v8a = libs/arm64-v8a/libSvtAv1Enc.so, libs/arm64-v8a/libavutil.so, libs/arm64-v8a/libswresample.so, libs/arm64-v8a/libavcodec.so, libs/arm64-v8a/libswscale.so, libs/arm64-v8a/libavformat.so, libs/arm64-v8a/libavfilter.so
+android.add_libs_arm64_v8a = libs/arm64-v8a/libSvtAv1Enc.so, libs/arm64-v8a/libavutil.so, libs/arm64-v8a/libswresample.so, libs/arm64-v8a/libavcodec.so, libs/arm64-v8a/libswscale.so, libs/arm64-v8a/libavformat.so, libs/arm64-v8a/libavfilter.so, libs/arm64-v8a/libffmpeg.so
 
 # (bool) Copy library instead of making a lib dir and symlinking on android
 android.copy_libs = 1
