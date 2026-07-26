@@ -103,8 +103,8 @@ def init_ffmpeg_path():
                 print(f"[WARNING] libffmpeg.so not found in {lib_dir}")
         except Exception as e:
             print(f"[ERROR] Failed to initialize FFmpeg path: {e}")
-else:
-    FFMPEG_PATH = "ffmpeg"
+    else:
+        FFMPEG_PATH = "ffmpeg"
 
 
 def load_native_libraries():
