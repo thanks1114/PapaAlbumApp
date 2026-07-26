@@ -143,9 +143,11 @@ def get_unique_target_path(target_dir, filename):
 
 def get_real_path_or_copy(uri_str, cache_dir):
     """
-    Androidの content:// URI から元ファイル名を取得し、openInputStream 経由で処理用キャッシュへコピーする。
-    （位置情報・Exifメタデータの取得と openInputStream + FileUtils による絶対成功処理）
+    Androidの content:// URI から元ファイル名および元フォルダ階層を取得し、
+    openInputStream 経由で処理用キャッシュへコピーする。
     """
+    os.makedirs(cache_dir, exist_ok=True)
+
     if not uri_str.startswith("content://"):
         path_obj = pathlib.Path(uri_str)
         return uri_str, path_obj.name, str(path_obj.parent)
@@ -185,7 +187,6 @@ def get_real_path_or_copy(uri_str, cache_dir):
             # 2. openInputStream による安全なストリーム取得（3段階フォールバック）
             input_stream = None
             
-            # トライA: 位置情報保持のため setRequireOriginal + openInputStream 試行
             if target_uri != raw_uri or "media" in uri_str:
                 try:
                     orig_uri = MediaStore.setRequireOriginal(target_uri)
@@ -194,7 +195,6 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     print(f"[INFO] setRequireOriginal 試行スキップ: {gps_err}")
                     input_stream = None
 
-            # トライB: 変換後の target_uri で openInputStream 試行
             if input_stream is None and target_uri is not None:
                 try:
                     input_stream = resolver.openInputStream(target_uri)
@@ -202,7 +202,6 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     print(f"[INFO] target_uri 試行スキップ: {err2}")
                     input_stream = None
 
-            # トライC: 元の raw_uri で openInputStream 試行 (最終安全策)
             if input_stream is None:
                 try:
                     input_stream = resolver.openInputStream(raw_uri)
@@ -210,8 +209,10 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     print(f"[ERROR] raw_uri 開画最終失敗: {err3}")
                     raise err3
 
-            # 3. ファイル名の取得
+            # 3. ファイル名および元フォルダパス（relative_path / _data）の取得
             filename = None
+            original_parent_dir = None
+            
             try:
                 OpenableColumns = autoclass('android.provider.OpenableColumns')
                 cursor = resolver.query(raw_uri, None, None, None, None)
@@ -220,9 +221,25 @@ def get_real_path_or_copy(uri_str, cache_dir):
                         name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                         if name_index != -1:
                             filename = cursor.getString(name_index)
+                        
+                        # 元ファイルの相対パス (例: "Pictures/Family/" や "DCIM/Camera/") から元の絶対フォルダを取得
+                        rel_idx = cursor.getColumnIndex("relative_path")
+                        if rel_idx != -1:
+                            rel_path = cursor.getString(rel_idx)
+                            if rel_path:
+                                original_parent_dir = os.path.join("/storage/emulated/0", rel_path.strip("/\\"))
+
+                        # フォールバック: _data カラムから直接絶対パスの親フォルダを取得
+                        if not original_parent_dir:
+                            data_idx = cursor.getColumnIndex("_data")
+                            if data_idx != -1:
+                                data_path = cursor.getString(data_idx)
+                                if data_path:
+                                    original_parent_dir = str(pathlib.Path(data_path).parent)
+
                     cursor.close()
             except Exception as e:
-                print(f"Failed to query OpenableColumns: {e}")
+                print(f"Failed to query metadata: {e}")
 
             if not filename or filename == "temp_media_file":
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
@@ -264,7 +281,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
             out_stream.close()
             input_stream.close()
 
-            return temp_path, pathlib.Path(temp_path).name, None
+            return temp_path, pathlib.Path(temp_path).name, original_parent_dir
 
         except Exception as e:
             print(f"Failed to copy content URI ({uri_str}): {e}")
@@ -309,7 +326,7 @@ def compress_video_av1(input_path, output_path):
         "-vcodec", "libsvtav1",
         "-crf", "32",
         "-preset", "8",
-        "-svtav1-params", "asm=c",  # 非対応ARMアセンブリ命令によるクラッシュ(SIGILL / code -4)を回避
+        "-svtav1-params", "asm=c",  # 非対応ARMアセンブリ命令によるクラッシュ(SIGILL)を回避
         "-threads", "2",
         "-acodec", "aac",
         "-b:a", "128k",
@@ -548,7 +565,7 @@ class MainLayout(BoxLayout):
                 self.write_log("[INFO] ファイル選択がキャンセルされました")
 
     def process_selected_files_thread(self, file_paths):
-        """ファイル選択後の処理（画像圧縮・全Exif/位置情報継承・回転補正・連番生成・動画処理）"""
+        """ファイル選択後の処理（元フォルダ直下へのPapaAlbum生成・画像圧縮・Exif継承・動画AV1圧縮）"""
         Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
         
         img_count = 0
@@ -577,6 +594,7 @@ class MainLayout(BoxLayout):
                     continue
 
                 try:
+                    # 元ファイルのフォルダが存在すればその直下に PapaAlbum を作成。取得不可時のフォールバック処理も用意。
                     if original_parent_dir and os.path.exists(original_parent_dir):
                         target_out_dir = os.path.join(original_parent_dir, "PapaAlbum")
                     elif os.path.exists(dcim_dir):
@@ -665,7 +683,7 @@ class MainLayout(BoxLayout):
         finally:
             total = img_count + video_count
             if total > 0:
-                result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n/PapaAlbum フォルダ等に保存されました。"
+                result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n元のフォルダ内の PapaAlbum に保存されました。"
             else:
                 result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
                 
