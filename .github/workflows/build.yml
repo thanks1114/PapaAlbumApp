@@ -51,7 +51,6 @@ jobs:
             libice-dev \
             libsm-dev \
             libjpeg-dev \
-            cython3 \
             ffmpeg \
             zip \
             unzip \
