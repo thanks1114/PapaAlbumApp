@@ -118,7 +118,8 @@ def get_unique_target_path(target_dir, filename):
 def get_real_path_or_copy(uri_str, cache_dir):
     """
     Androidの content:// URI から元ファイル名を取得し、
-    ParcelFileDescriptor経由で安全に処理用キャッシュへコピーする
+    ParcelFileDescriptor経由で安全に処理用キャッシュへコピーする。
+    （setRequireOriginal により GPS 位置情報やその他 Exif メタデータを保持する）
     """
     if not uri_str.startswith("content://"):
         path_obj = pathlib.Path(uri_str)
@@ -130,26 +131,46 @@ def get_real_path_or_copy(uri_str, cache_dir):
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             context = PythonActivity.mActivity
             Uri = autoclass('android.net.Uri')
+            MediaStore = autoclass('android.provider.MediaStore')
             
             raw_uri = Uri.parse(uri_str)
-            uri = raw_uri
+            target_uri = raw_uri
             
-            # MediaStore URI の場合のみ Exif 位置情報オリジナルの取得を試みる
-            if "com.android.providers.media.documents" not in uri_str:
+            # 1. Document URI (com.android.providers.media.documents) を MediaStore URI に変換
+            if "com.android.providers.media.documents" in uri_str:
                 try:
-                    MediaStore = autoclass('android.provider.MediaStore')
-                    uri = MediaStore.setRequireOriginal(raw_uri)
-                except Exception as gps_err:
-                    uri = raw_uri
+                    DocumentsContract = autoclass('android.provider.DocumentsContract')
+                    doc_id = DocumentsContract.getDocumentId(raw_uri)
+                    if ":" in doc_id:
+                        type_str, id_str = doc_id.split(":", 1)
+                        if type_str == "image":
+                            base_uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                        elif type_str == "video":
+                            base_uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                        else:
+                            base_uri = None
+                        
+                        if base_uri:
+                            ContentUris = autoclass('android.content.ContentUris')
+                            target_uri = ContentUris.withAppendedId(base_uri, int(id_str))
+                except Exception as doc_err:
+                    print(f"[WARNING] MediaStore URI 変換スキップ: {doc_err}")
+
+            # 2. Android 10+ の位置情報・メタデータ保護(Redaction)を解除してオリジナル取得を要求
+            try:
+                open_uri = MediaStore.setRequireOriginal(target_uri)
+            except Exception as gps_err:
+                open_uri = target_uri
+                print(f"[WARNING] setRequireOriginal 適用スキップ: {gps_err}")
 
             resolver = context.getContentResolver()
             filename = None
             original_parent_dir = None
             
-            # 1. OpenableColumns から元ファイル名を取得
+            # 3. OpenableColumns から元ファイル名を取得
             try:
                 OpenableColumns = autoclass('android.provider.OpenableColumns')
-                cursor = resolver.query(uri, None, None, None, None)
+                cursor = resolver.query(raw_uri, None, None, None, None)
                 if cursor is not None and cursor.moveToFirst():
                     name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if name_index != -1:
@@ -158,31 +179,11 @@ def get_real_path_or_copy(uri_str, cache_dir):
             except Exception as e:
                 print(f"Failed to query OpenableColumns: {e}")
 
-            # 2. MediaStore URI の場合のみ DATA カラムからのパス取得を試みる
-            if "com.android.providers.media.documents" not in uri_str:
-                try:
-                    MediaStore = autoclass('android.provider.MediaStore')
-                    projection = [MediaStore.MediaColumns.DATA]
-                    cursor = resolver.query(uri, projection, None, None, None)
-                    if cursor is not None and cursor.moveToFirst():
-                        data_index = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                        if data_index != -1:
-                            real_path = cursor.getString(data_index)
-                            if real_path and real_path.startswith("/"):
-                                original_parent_dir = str(pathlib.Path(real_path).parent)
-                                if not filename:
-                                    filename = pathlib.Path(real_path).name
-                        cursor.close()
-                except Exception as e:
-                    print(f"Failed to query MediaStore DATA: {e}")
-
-            # 3. 取得できない場合のユニークファイル名生成
             if not filename or filename == "temp_media_file":
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
                 filename = f"Media_{timestamp_str}"
 
-            # 拡張子の補正
-            mime_type = resolver.getType(uri)
+            mime_type = resolver.getType(raw_uri)
             if not pathlib.Path(filename).suffix and mime_type:
                 if "jpeg" in mime_type or "jpg" in mime_type:
                     filename += ".jpg"
@@ -197,8 +198,8 @@ def get_real_path_or_copy(uri_str, cache_dir):
 
             temp_path = get_unique_target_path(cache_dir, filename)
             
-            # ParcelFileDescriptor を使用した Python ネイティブファイル記述子による安全なストリームコピー
-            pfd = resolver.openFileDescriptor(uri, "r")
+            # 4. setRequireOriginal を適用した open_uri からストリームを読み込みコピー
+            pfd = resolver.openFileDescriptor(open_uri, "r")
             if pfd is None:
                 raise IOError("openFileDescriptor returned None")
 
@@ -253,10 +254,11 @@ def compress_video_av1(input_path, output_path):
         "-vcodec", "libsvtav1",
         "-crf", "32",
         "-preset", "8",
-        "-threads", "2",  # モバイル端末のOOM(クラッシュ)防止用の制限
+        "-svtav1-params", "asm=c",  # 非対応ARMアセンブリ命令によるクラッシュ(SIGILL / code -4)を回避
+        "-threads", "2",            # モバイル端末のOOM(クラッシュ)防止用の制限
         "-acodec", "aac",
         "-b:a", "128k",
-        "-map_metadata", "0",
+        "-map_metadata", "0",        # メタデータ(位置情報・作成日時等)を維持
         "-movflags", "+faststart",
         output_path
     ]
@@ -491,7 +493,7 @@ class MainLayout(BoxLayout):
                 self.write_log("[INFO] ファイル選択がキャンセルされました")
 
     def process_selected_files_thread(self, file_paths):
-        """ファイル選択後の処理（画像圧縮・Exif位置情報継承・回転補正・連番生成・動画処理）"""
+        """ファイル選択後の処理（画像圧縮・全Exif/位置情報継承・回転補正・連番生成・動画処理）"""
         Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
         
         img_count = 0
@@ -540,14 +542,16 @@ class MainLayout(BoxLayout):
                 except Exception:
                     fallback_mtime = time.time()
                 
-                # --- 画像圧縮 & Exif（位置情報・GPS等）継承 ---
+                # --- 画像圧縮 & Exif（全メタデータ・GPS位置情報等）継承 ---
                 if ext in [".jpg", ".jpeg", ".png", ".webp"]:
                     self.write_log(f"[PROCESSING] 画像圧縮中 ({pathlib.Path(output_path).name})")
                     
                     exif_bytes = None
                     if ext in [".jpg", ".jpeg"]:
                         try:
+                            # 1. 全Exifタグ(位置情報・カメラ設定など)を取得
                             exif_dict = piexif.load(working_path)
+                            # 2. 回転方向フラグを正位置(1)に補正
                             if "0th" in exif_dict and piexif.ImageIFD.Orientation in exif_dict["0th"]:
                                 exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
                             exif_bytes = piexif.dump(exif_dict)
