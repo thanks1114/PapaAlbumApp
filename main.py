@@ -777,71 +777,7 @@ class PapaAlbumApp(App):
         )
 
         def on_agree(instance):
-            self.store.put('user_agreement', accepted=True)import os
-import pathlib
-import shutil
-import threading
-import time
-import subprocess
-import webbrowser
-from datetime import datetime
-from PIL import Image, ImageOps
-
-from kivy.app import App
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
-from kivy.uix.label import Label
-from kivy.uix.popup import Popup
-from kivy.uix.scrollview import ScrollView
-from kivy.utils import platform
-from kivy.core.text import LabelBase
-from kivy.graphics import Color, Rectangle
-from kivy.clock import Clock
-from kivy.storage.jsonstore import JsonStore
-from kivy.core.clipboard import Clipboard
-from kivy.core.window import Window
-
-import piexif
-
-# --- グローバル変数 ---
-FFMPEG_PATH = None
-
-# --- 日本語フォントの登録 ---
-FONT_NAME = "ja_font"
-if platform == "android":
-    font_path = "/system/fonts/NotoSansCJK-Regular.ttc"
-    if not os.path.exists(font_path):
-        font_path = "/system/fonts/DroidSansFallback.ttf"
-else:
-    font_path = "NotoSansJP-Regular.ttf"
-
-try:
-    if os.path.exists(font_path):
-        LabelBase.register(name=FONT_NAME, fn_regular=font_path)
-    else:
-        FONT_NAME = None
-except Exception as e:
-    print(f"Font registration failed: {e}")
-    FONT_NAME = None
-
-# --- カラーパレット定義 ---
-COLOR_BG = (0.99, 0.98, 0.96, 1)
-COLOR_TEXT = (0.29, 0.22, 0.17, 1)
-COLOR_PRIMARY = (0.90, 0.58, 0.39, 1)
-COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
-
-
-def set_keep_screen_on(turn_on=True):
-    """メディア処理中の画面スリープおよびプロセスの凍結（freezing）を防止する"""
-    if platform == "android":
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            WindowManager = autoclass('android.view.WindowManager$LayoutParams')
-            activity = PythonActivity.mActivity
-            
-            def _update_flags(dt):
-
+            self.store.put('user_agreement', accepted=True)
             popup.dismiss()
 
         agree_btn.bind(on_press=on_agree)
