@@ -103,8 +103,8 @@ def init_ffmpeg_path():
                 print(f"[WARNING] libffmpeg.so not found in {lib_dir}")
         except Exception as e:
             print(f"[ERROR] Failed to initialize FFmpeg path: {e}")
-    else:
-        FFMPEG_PATH = "ffmpeg"
+else:
+    FFMPEG_PATH = "ffmpeg"
 
 
 def load_native_libraries():
@@ -324,13 +324,12 @@ def compress_video_av1(input_path, output_path):
         FFMPEG_PATH, "-y",
         "-i", input_path,
         "-vcodec", "libsvtav1",
-        "-crf", "32",
-        "-preset", "8",
-        "-svtav1-params", "asm=c",  # 非対応ARMアセンブリ命令によるクラッシュ(SIGILL)を回避
-        "-threads", "2",
+        "-crf", "35",
+        "-preset", "10",
+        "-svtav1-params", "tune=0",
         "-acodec", "aac",
         "-b:a", "128k",
-        "-map_metadata", "0",        # メタデータ(位置情報・作成日時等)を維持
+        "-map_metadata", "0",
         "-movflags", "+faststart",
         output_path
     ]
@@ -339,13 +338,15 @@ def compress_video_av1(input_path, output_path):
         cmd, 
         stdout=subprocess.PIPE, 
         stderr=subprocess.PIPE, 
-        env=env
+        env=env,
+        text=True,
+        errors='ignore'
     )
     stdout, stderr = process.communicate()
     
     if process.returncode != 0:
-        err_msg = stderr.decode('utf-8', errors='ignore')
-        raise RuntimeError(f"FFmpeg Error (code {process.returncode}): {err_msg}")
+        err_detail = stderr.strip() if stderr else f"Return code: {process.returncode}"
+        raise RuntimeError(f"FFmpeg Error (code {process.returncode}): {err_detail[-300:]}")
 
 
 class MainLayout(BoxLayout):
