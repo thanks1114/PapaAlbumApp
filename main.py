@@ -52,6 +52,32 @@ COLOR_PRIMARY = (0.90, 0.58, 0.39, 1)
 COLOR_SECONDARY = (0.45, 0.62, 0.51, 1)
 
 
+def set_keep_screen_on(turn_on=True):
+    """メディア処理中の画面スリープおよびプロセスの凍結（freezing）を防止する"""
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            WindowManager = autoclass('android.view.WindowManager$LayoutParams')
+            activity = PythonActivity.mActivity
+            
+            def _update_flags(dt):
+                try:
+                    window = activity.getWindow()
+                    if turn_on:
+                        window.addFlags(WindowManager.FLAG_KEEP_SCREEN_ON)
+                        print("[INFO] KEEP_SCREEN_ON: 有効化")
+                    else:
+                        window.clearFlags(WindowManager.FLAG_KEEP_SCREEN_ON)
+                        print("[INFO] KEEP_SCREEN_ON: 解除")
+                except Exception as ex:
+                    print(f"[ERROR] Window flags update failed: {ex}")
+            
+            Clock.schedule_once(_update_flags)
+        except Exception as e:
+            print(f"[ERROR] Failed to set KEEP_SCREEN_ON: {e}")
+
+
 def init_ffmpeg_path():
     """
     メインスレッド(JNI有効時)でネイティブFFmpegバイナリのパスを取得しキャッシュする
@@ -117,9 +143,8 @@ def get_unique_target_path(target_dir, filename):
 
 def get_real_path_or_copy(uri_str, cache_dir):
     """
-    Androidの content:// URI から元ファイル名を取得し、
-    ParcelFileDescriptor経由で安全に処理用キャッシュへコピーする。
-    （setRequireOriginal により GPS 位置情報やその他 Exif メタデータを保持する）
+    Androidの content:// URI から元ファイル名を取得し、openInputStream 経由で処理用キャッシュへコピーする。
+    （位置情報・Exifメタデータの取得と openInputStream + FileUtils による絶対成功処理）
     """
     if not uri_str.startswith("content://"):
         path_obj = pathlib.Path(uri_str)
@@ -132,11 +157,12 @@ def get_real_path_or_copy(uri_str, cache_dir):
             context = PythonActivity.mActivity
             Uri = autoclass('android.net.Uri')
             MediaStore = autoclass('android.provider.MediaStore')
+            resolver = context.getContentResolver()
             
             raw_uri = Uri.parse(uri_str)
             target_uri = raw_uri
             
-            # 1. Document URI (com.android.providers.media.documents) を MediaStore URI に変換
+            # 1. Document URI を MediaStore URI へ変換
             if "com.android.providers.media.documents" in uri_str:
                 try:
                     DocumentsContract = autoclass('android.provider.DocumentsContract')
@@ -151,30 +177,49 @@ def get_real_path_or_copy(uri_str, cache_dir):
                             base_uri = None
                         
                         if base_uri:
-                            ContentUris = autoclass('android.content.ContentUris')
-                            target_uri = ContentUris.withAppendedId(base_uri, int(id_str))
+                            target_uri = Uri.withAppendedPath(base_uri, id_str)
                 except Exception as doc_err:
                     print(f"[WARNING] MediaStore URI 変換スキップ: {doc_err}")
+                    target_uri = raw_uri
 
-            # 2. Android 10+ の位置情報・メタデータ保護(Redaction)を解除してオリジナル取得を要求
-            try:
-                open_uri = MediaStore.setRequireOriginal(target_uri)
-            except Exception as gps_err:
-                open_uri = target_uri
-                print(f"[WARNING] setRequireOriginal 適用スキップ: {gps_err}")
-
-            resolver = context.getContentResolver()
-            filename = None
-            original_parent_dir = None
+            # 2. openInputStream による安全なストリーム取得（3段階フォールバック）
+            input_stream = None
             
-            # 3. OpenableColumns から元ファイル名を取得
+            # トライA: 位置情報保持のため setRequireOriginal + openInputStream 試行
+            if target_uri != raw_uri or "media" in uri_str:
+                try:
+                    orig_uri = MediaStore.setRequireOriginal(target_uri)
+                    input_stream = resolver.openInputStream(orig_uri)
+                except Exception as gps_err:
+                    print(f"[INFO] setRequireOriginal 試行スキップ: {gps_err}")
+                    input_stream = None
+
+            # トライB: 変換後の target_uri で openInputStream 試行
+            if input_stream is None and target_uri is not None:
+                try:
+                    input_stream = resolver.openInputStream(target_uri)
+                except Exception as err2:
+                    print(f"[INFO] target_uri 試行スキップ: {err2}")
+                    input_stream = None
+
+            # トライC: 元の raw_uri で openInputStream 試行 (最終安全策)
+            if input_stream is None:
+                try:
+                    input_stream = resolver.openInputStream(raw_uri)
+                except Exception as err3:
+                    print(f"[ERROR] raw_uri 開画最終失敗: {err3}")
+                    raise err3
+
+            # 3. ファイル名の取得
+            filename = None
             try:
                 OpenableColumns = autoclass('android.provider.OpenableColumns')
                 cursor = resolver.query(raw_uri, None, None, None, None)
-                if cursor is not None and cursor.moveToFirst():
-                    name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if name_index != -1:
-                        filename = cursor.getString(name_index)
+                if cursor is not None:
+                    if cursor.moveToFirst():
+                        name_index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if name_index != -1:
+                            filename = cursor.getString(name_index)
                     cursor.close()
             except Exception as e:
                 print(f"Failed to query OpenableColumns: {e}")
@@ -197,23 +242,34 @@ def get_real_path_or_copy(uri_str, cache_dir):
                     filename += ".mov"
 
             temp_path = get_unique_target_path(cache_dir, filename)
-            
-            # 4. setRequireOriginal を適用した open_uri からストリームを読み込みコピー
-            pfd = resolver.openFileDescriptor(open_uri, "r")
-            if pfd is None:
-                raise IOError("openFileDescriptor returned None")
 
-            fd = pfd.getFd()
-            with open(fd, 'rb', closefd=False) as f_in:
-                with open(temp_path, 'wb') as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            pfd.close()
-            
-            return temp_path, pathlib.Path(temp_path).name, original_parent_dir
+            # 4. android.os.FileUtils による高速ストリームコピー
+            FileOutputStream = autoclass('java.io.FileOutputStream')
+            File = autoclass('java.io.File')
+            out_stream = FileOutputStream(File(temp_path))
+
+            try:
+                FileUtils = autoclass('android.os.FileUtils')
+                FileUtils.copy(input_stream, out_stream)
+            except Exception as copy_ex:
+                print(f"[INFO] FileUtils.copy 未対応のため手動バッファコピーへ移行: {copy_ex}")
+                from jnius import jarray
+                buf = jarray('b')([0] * 8192)
+                while True:
+                    length = input_stream.read(buf)
+                    if length <= 0:
+                        break
+                    out_stream.write(buf, 0, length)
+
+            out_stream.close()
+            input_stream.close()
+
+            return temp_path, pathlib.Path(temp_path).name, None
+
         except Exception as e:
             print(f"Failed to copy content URI ({uri_str}): {e}")
             return None, None, None
-            
+
     path_obj = pathlib.Path(uri_str)
     return uri_str, path_obj.name, str(path_obj.parent)
 
@@ -237,7 +293,6 @@ def compress_video_av1(input_path, output_path):
     if not FFMPEG_PATH:
         raise FileNotFoundError("FFmpeg バイナリパスが初期化されていません")
     
-    # 依存ライブラリ(.so)を探せるよう Android の nativeLibraryDir を LD_LIBRARY_PATH に設定
     env = os.environ.copy()
     if platform == "android":
         try:
@@ -255,7 +310,7 @@ def compress_video_av1(input_path, output_path):
         "-crf", "32",
         "-preset", "8",
         "-svtav1-params", "asm=c",  # 非対応ARMアセンブリ命令によるクラッシュ(SIGILL / code -4)を回避
-        "-threads", "2",            # モバイル端末のOOM(クラッシュ)防止用の制限
+        "-threads", "2",
         "-acodec", "aac",
         "-b:a", "128k",
         "-map_metadata", "0",        # メタデータ(位置情報・作成日時等)を維持
@@ -379,7 +434,7 @@ class MainLayout(BoxLayout):
         self.policy_btn.bind(on_press=self.open_policy_url)
         
         version_label = Label(
-            text="ver 1.1.0",
+            text="ver 1.1.3",
             font_size='12sp',
             color=(0.6, 0.5, 0.4, 1),
             size_hint_x=0.3
@@ -506,128 +561,129 @@ class MainLayout(BoxLayout):
         
         cache_dir = App.get_running_app().user_data_dir
 
-        for index, raw_input_path in enumerate(file_paths, start=1):
-            Clock.schedule_once(
-                lambda dt, idx=index: self.update_status(f"パパ頑張り中... ({idx} / {total_files})")
-            )
-            
-            if not raw_input_path:
-                continue
+        try:
+            for index, raw_input_path in enumerate(file_paths, start=1):
+                Clock.schedule_once(
+                    lambda dt, idx=index: self.update_status(f"パパ頑張り中... ({idx} / {total_files})\n※完了までアプリを開いたままにしてください")
+                )
                 
-            working_path, original_filename, original_parent_dir = get_real_path_or_copy(raw_input_path, cache_dir)
-            
-            if not working_path or working_path.startswith("content://"):
-                self.write_log(f"[ERROR] ファイルの取得・コピーに失敗しました: {raw_input_path}")
-                continue
-
-            try:
-                if original_parent_dir and os.path.exists(original_parent_dir):
-                    target_out_dir = os.path.join(original_parent_dir, "PapaAlbum")
-                elif os.path.exists(dcim_dir):
-                    target_out_dir = os.path.join(dcim_dir, "PapaAlbum")
-                elif os.path.exists(pictures_dir):
-                    target_out_dir = os.path.join(pictures_dir, "PapaAlbum")
-                else:
-                    target_out_dir = os.path.join(download_dir, "PapaAlbum")
-
-                os.makedirs(target_out_dir, exist_ok=True)
-
-                filename = original_filename if original_filename else pathlib.Path(working_path).name
-                ext = pathlib.Path(filename).suffix.lower()
+                if not raw_input_path:
+                    continue
+                    
+                working_path, original_filename, original_parent_dir = get_real_path_or_copy(raw_input_path, cache_dir)
                 
-                output_path = get_unique_target_path(target_out_dir, filename)
-                
+                if not working_path or working_path.startswith("content://"):
+                    self.write_log(f"[ERROR] ファイルの取得・コピーに失敗しました: {raw_input_path}")
+                    continue
+
                 try:
-                    fallback_mtime = os.path.getmtime(working_path)
-                except Exception:
-                    fallback_mtime = time.time()
-                
-                # --- 画像圧縮 & Exif（全メタデータ・GPS位置情報等）継承 ---
-                if ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                    self.write_log(f"[PROCESSING] 画像圧縮中 ({pathlib.Path(output_path).name})")
-                    
-                    exif_bytes = None
-                    if ext in [".jpg", ".jpeg"]:
-                        try:
-                            # 1. 全Exifタグ(位置情報・カメラ設定など)を取得
-                            exif_dict = piexif.load(working_path)
-                            # 2. 回転方向フラグを正位置(1)に補正
-                            if "0th" in exif_dict and piexif.ImageIFD.Orientation in exif_dict["0th"]:
-                                exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
-                            exif_bytes = piexif.dump(exif_dict)
-                        except Exception as e:
-                            self.write_log(f"[INFO] Exif抽出・補正スキップ: {e}")
+                    if original_parent_dir and os.path.exists(original_parent_dir):
+                        target_out_dir = os.path.join(original_parent_dir, "PapaAlbum")
+                    elif os.path.exists(dcim_dir):
+                        target_out_dir = os.path.join(dcim_dir, "PapaAlbum")
+                    elif os.path.exists(pictures_dir):
+                        target_out_dir = os.path.join(pictures_dir, "PapaAlbum")
+                    else:
+                        target_out_dir = os.path.join(download_dir, "PapaAlbum")
 
-                    with Image.open(working_path) as img:
-                        target_mtime = get_exif_mtime(img, fallback_mtime)
-                        img = ImageOps.exif_transpose(img)
-                        img.thumbnail((3000, 3000))
+                    os.makedirs(target_out_dir, exist_ok=True)
+
+                    filename = original_filename if original_filename else pathlib.Path(working_path).name
+                    ext = pathlib.Path(filename).suffix.lower()
+                    
+                    output_path = get_unique_target_path(target_out_dir, filename)
+                    
+                    try:
+                        fallback_mtime = os.path.getmtime(working_path)
+                    except Exception:
+                        fallback_mtime = time.time()
+                    
+                    # --- 画像圧縮 & Exif（全メタデータ・GPS位置情報等）継承 ---
+                    if ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                        self.write_log(f"[PROCESSING] 画像圧縮中 ({pathlib.Path(output_path).name})")
                         
-                        save_kwargs = {"optimize": True}
+                        exif_bytes = None
                         if ext in [".jpg", ".jpeg"]:
-                            save_kwargs["quality"] = 85
-                            if exif_bytes:
-                                save_kwargs["exif"] = exif_bytes
+                            try:
+                                exif_dict = piexif.load(working_path)
+                                if "0th" in exif_dict and piexif.ImageIFD.Orientation in exif_dict["0th"]:
+                                    exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+                                exif_bytes = piexif.dump(exif_dict)
+                            except Exception as e:
+                                self.write_log(f"[INFO] Exif抽出・補正スキップ: {e}")
 
-                        img.save(output_path, **save_kwargs)
-                    
-                    try:
-                        os.utime(output_path, (target_mtime, target_mtime))
-                    except Exception as e:
-                        self.write_log(f"[WARNING] 日付設定失敗: {e}")
+                        with Image.open(working_path) as img:
+                            target_mtime = get_exif_mtime(img, fallback_mtime)
+                            img = ImageOps.exif_transpose(img)
+                            img.thumbnail((3000, 3000))
+                            
+                            save_kwargs = {"optimize": True}
+                            if ext in [".jpg", ".jpeg"]:
+                                save_kwargs["quality"] = 85
+                                if exif_bytes:
+                                    save_kwargs["exif"] = exif_bytes
+
+                            img.save(output_path, **save_kwargs)
                         
-                    img_count += 1
-                    self.write_log(f"[SUCCESS] 保存完了: {output_path}")
-                    
-                # --- 動画処理 (AV1圧縮 or 直接コピー) ---
-                elif ext in [".mp4", ".mov", ".m4v"]:
-                    self.write_log(f"[PROCESSING] AV1動画圧縮中: {pathlib.Path(output_path).name}")
-                    try:
-                        compress_video_av1(working_path, output_path)
-                        self.write_log(f"[SUCCESS] AV1圧縮完了: {output_path}")
-                    except Exception as video_err:
-                        self.write_log(f"[WARNING] AV1スキップ(コピーへ移行): {video_err}")
-                        shutil.copy2(working_path, output_path)
-                        self.write_log(f"[SUCCESS] コピー完了: {output_path}")
+                        try:
+                            os.utime(output_path, (target_mtime, target_mtime))
+                        except Exception as e:
+                            self.write_log(f"[WARNING] 日付設定失敗: {e}")
+                            
+                        img_count += 1
+                        self.write_log(f"[SUCCESS] 保存完了: {output_path}")
+                        
+                    # --- 動画処理 (AV1圧縮 or 直接コピー) ---
+                    elif ext in [".mp4", ".mov", ".m4v"]:
+                        self.write_log(f"[PROCESSING] AV1動画圧縮中: {pathlib.Path(output_path).name}")
+                        try:
+                            compress_video_av1(working_path, output_path)
+                            self.write_log(f"[SUCCESS] AV1圧縮完了: {output_path}")
+                        except Exception as video_err:
+                            self.write_log(f"[WARNING] AV1スキップ(コピーへ移行): {video_err}")
+                            shutil.copy2(working_path, output_path)
+                            self.write_log(f"[SUCCESS] コピー完了: {output_path}")
 
-                    try:
-                        os.utime(output_path, (fallback_mtime, fallback_mtime))
-                    except Exception:
-                        pass
+                        try:
+                            os.utime(output_path, (fallback_mtime, fallback_mtime))
+                        except Exception:
+                            pass
 
-                    video_count += 1
-                    
-                else:
-                    self.write_log(f"[SKIP] 未対応フォーマット: {filename} ({ext})")
-                    
-            except Exception as e:
-                self.write_log(f"[ERROR] 処理失敗 {filename}: {e}")
-            finally:
-                if raw_input_path.startswith("content://") and os.path.exists(working_path):
-                    try:
-                        os.remove(working_path)
-                    except Exception:
-                        pass
-                    
-        total = img_count + video_count
-        if total > 0:
-            result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n/PapaAlbum フォルダ等に保存されました。"
-        else:
-            result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
-            
-        Clock.schedule_once(lambda dt: self.update_status(result_text))
-        Clock.schedule_once(lambda dt: self.enable_button())
+                        video_count += 1
+                        
+                    else:
+                        self.write_log(f"[SKIP] 未対応フォーマット: {filename} ({ext})")
+                        
+                except Exception as e:
+                    self.write_log(f"[ERROR] 処理失敗 {filename}: {e}")
+                finally:
+                    if raw_input_path.startswith("content://") and os.path.exists(working_path):
+                        try:
+                            os.remove(working_path)
+                        except Exception:
+                            pass
+        finally:
+            total = img_count + video_count
+            if total > 0:
+                result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n/PapaAlbum フォルダ等に保存されました。"
+            else:
+                result_text = "ファイルの処理に失敗しました。\nログを確認してください。"
+                
+            Clock.schedule_once(lambda dt: self.update_status(result_text))
+            Clock.schedule_once(lambda dt: self.enable_button())
 
     def _prepare_processing_ui(self, count):
         self.select_btn.disabled = True
-        self.status_label.text = f"準備中... (0 / {count})"
+        self.status_label.text = f"準備中... (0 / {count})\n※完了までアプリを開いたままにしてください"
         self.write_log(f"[INFO] {count}個のファイルが選択されました。処理を開始します...")
+        set_keep_screen_on(True)
 
     def update_status(self, text):
         self.status_label.text = text
 
     def enable_button(self):
         self.select_btn.disabled = False
+        set_keep_screen_on(False)
 
 
 class PapaAlbumApp(App):
