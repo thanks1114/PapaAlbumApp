@@ -19,7 +19,7 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,ttc,json
 version = 1.1.3
 
 # (list) Application requirements
-requirements = python3,kivy,pillow,piexif,pyjnius
+requirements = python3==3.11.9, hostpython3==3.11.9,kivy,pillow,piexif,pyjnius
 
 # (list) Permissions
 android.permissions = READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, ACCESS_MEDIA_LOCATION, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
