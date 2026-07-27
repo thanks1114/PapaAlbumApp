@@ -1,97 +1,121 @@
 import os
-import subprocess
+import sys
 from kivy.utils import platform
 
-def test_native_libraries():
-    """
-    Android上でネイティブライブラリ(.so)のロードおよび
-    FFmpegバイナリの起動が可能かを単体テストする
-    """
-    print("=" * 40)
-    print(" Native Library Standalone Test ")
-    print("=" * 40)
-    
-    if platform != "android":
-        print("[INFO] Android環境ではありません。PC環境での実行をスキップします。")
-        return
 
-    try:
-        from jnius import autoclass
-        PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        System = autoclass('java.lang.System')
-        
-        activity = PythonActivity.mActivity
-        lib_dir = activity.getApplicationInfo().nativeLibraryDir
-        print(f"[INFO] Native Library Directory:\n  -> {lib_dir}\n")
+def compress_video(input_path: str, output_path: str) -> bool:
+    """指定された動画ファイルをFFmpegKit(Android)で圧縮する（同期処理）
 
-        # -------------------------------------------------------------
-        # テスト 1: C/C++ 共有ライブラリ (.so) の Java 側ロード確認
-        # -------------------------------------------------------------
-        print("--- [TEST 1] System.loadLibrary チェック ---")
-        libs_to_test = [
-            "SvtAv1Enc",
-            "avutil",
-            "swresample",
-            "avcodec",
-            "swscale",
-            "avformat",
-            "avfilter"
+    :param input_path: 圧縮元の動画ファイルパス
+    :param output_path: 圧縮後の保存先パス
+    :return: 成功したら True, 失敗したら False
+    """
+    print(f"[START] 動画圧縮を開始します: {input_path}")
+
+    # 出力先ディレクトリが存在しない場合は作成
+    out_dir = os.path.dirname(output_path)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
+    # --- Android実機環境での処理 ---
+    if platform == "android":
+        try:
+            from jnius import autoclass
+
+            # FFmpegKit Javaクラスの取得
+            FFmpegKit = autoclass("com.arthenica.ffmpegkit.FFmpegKit")
+            ReturnCode = autoclass("com.arthenica.ffmpegkit.ReturnCode")
+
+            # コマンド引数の組み立て (配列ではなく文字列で指定)
+            command = (
+                f'-y -i "{input_path}" '
+                f"-vcodec libsvtav1 -crf 38 -preset 12 "
+                f'-acodec aac -b:a 128k -movflags +faststart "{output_path}"'
+            )
+
+            # FFmpegKit の実行（完了までブロッキング同期処理）
+            session = FFmpegKit.execute(command)
+            return_code = session.getReturnCode()
+
+            # 実行結果の確認
+            if ReturnCode.isSuccess(return_code):
+                print(f"[SUCCESS] 圧縮完了: {output_path}")
+                return True
+            else:
+                fail_trace = session.getFailStackTrace()
+                output = session.getOutput()
+                err_msg = output or fail_trace or f"Return code: {return_code}"
+                print(
+                    f"[ERROR] 圧縮失敗 (code {return_code}): {str(err_msg)[-300:]}"
+                )
+                return False
+
+        except Exception as e:
+            import traceback
+
+            print(
+                f"[ERROR] Android環境でのFFmpegKit実行失敗:\n{traceback.format_exc()}"
+            )
+            return False
+
+    # --- PC環境（開発・テスト用）のフォールバック処理 ---
+    else:
+        import subprocess
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            input_path,
+            "-vcodec",
+            "libsvtav1",
+            "-crf",
+            "38",
+            "-preset",
+            "12",
+            "-acodec",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            output_path,
         ]
 
-        for lib in libs_to_test:
-            try:
-                System.loadLibrary(lib)
-                print(f"  [SUCCESS] lib{lib}.so : ロード成功")
-            except Exception as e:
-                print(f"  [FAILED]  lib{lib}.so : ロード失敗 -> {e}")
-
-        # -------------------------------------------------------------
-        # テスト 2: libffmpeg.so バイナリの実行可否確認 (-version)
-        # -------------------------------------------------------------
-        print("\n--- [TEST 2] FFmpeg バイナリ起動テスト (-version) ---")
-        ffmpeg_so = os.path.join(lib_dir, "libffmpeg.so")
-        
-        if not os.path.exists(ffmpeg_so):
-            print(f"  [FAILED] {ffmpeg_so} が見つかりません。")
-            return
-
         try:
-            os.chmod(ffmpeg_so, 0o755)
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="ignore",
+            )
+            stdout, stderr = process.communicate()
+
+            if process.returncode == 0:
+                print(f"[SUCCESS] 圧縮完了: {output_path}")
+                return True
+            else:
+                err_msg = (
+                    stderr.strip()
+                    if stderr
+                    else f"Return code: {process.returncode}"
+                )
+                print(
+                    f"[ERROR] 圧縮失敗 (code {process.returncode}): {err_msg[-300:]}"
+                )
+                return False
         except Exception as e:
-            print(f"  [WARNING] os.chmod 失敗: {e}")
-
-        env = os.environ.copy()
-        env["LD_LIBRARY_PATH"] = lib_dir
-
-        # FFmpegのバージョン情報を取得するだけのコマンド
-        cmd = [ffmpeg_so, "-version"]
-        
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            text=True,
-            errors='ignore'
-        )
-        stdout, stderr = process.communicate()
-
-        if process.returncode == 0:
-            first_line = stdout.splitlines()[0] if stdout else "Output is empty"
-            print(f"  [SUCCESS] FFmpeg 起動成功！")
-            print(f"  -> バージョン情報: {first_line}")
-        else:
-            print(f"  [FAILED] FFmpeg 異常終了 (Return code: {process.returncode})")
-            if stderr:
-                print(f"  -> エラー詳細:\n{stderr.strip()[:300]}")
-
-    except Exception as e:
-        print(f"\n[CRITICAL ERROR] テスト全体で例外が発生しました: {e}")
-
-    print("\n" + "=" * 40)
-    print(" テスト完了 ")
-    print("=" * 40)
+            print(f"[ERROR] PC環境での実行失敗: {e}")
+            return False
 
 
+# --- 使用例 ---
 if __name__ == "__main__":
-    test_native_libraries()
+    src_video = "/storage/emulated/0/DCIM/Camera/PXL_20260725_010437613.mp4"
+    dst_video = "/storage/emulated/0/DCIM/PapaAlbum/sample_compressed.mp4"
+
+    if os.path.exists(src_video):
+        compress_video(src_video, dst_video)
+    else:
+        print(f"ファイルが存在しません: {src_video}")
