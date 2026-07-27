@@ -222,7 +222,7 @@ def get_real_path_or_copy(uri_str, cache_dir):
                         if name_index != -1:
                             filename = cursor.getString(name_index)
                         
-                        # 元ファイルの相対パス (例: "Pictures/Family/" や "DCIM/Camera/") から元の絶対フォルダを取得
+                        # 元ファイルの相対パスから元の絶対フォルダを取得
                         rel_idx = cursor.getColumnIndex("relative_path")
                         if rel_idx != -1:
                             rel_path = cursor.getString(rel_idx)
@@ -305,7 +305,7 @@ def get_exif_mtime(img, fallback_mtime):
 
 
 def compress_video_av1(input_path, output_path):
-    """FFmpegバイナリを用いたAV1(libsvtav1)動画エンコード処理"""
+    """FFmpegバイナリを用いたAV1(libsvtav1)動画エンコード処理（負荷軽減調整版）"""
     global FFMPEG_PATH
     if not FFMPEG_PATH:
         raise FileNotFoundError("FFmpeg バイナリパスが初期化されていません")
@@ -324,9 +324,8 @@ def compress_video_av1(input_path, output_path):
         FFMPEG_PATH, "-y",
         "-i", input_path,
         "-vcodec", "libsvtav1",
-        "-crf", "35",
-        "-preset", "10",
-        "-svtav1-params", "tune=0",
+        "-crf", "38",               # CRF値を調整し負荷を低減
+        "-preset", "12",             # エンコードプリセットを最軽量に設定 (10 -> 12)
         "-acodec", "aac",
         "-b:a", "128k",
         "-map_metadata", "0",
@@ -511,7 +510,6 @@ class MainLayout(BoxLayout):
                 
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Intent = autoclass('android.content.Intent')
-                String = autoclass('java.lang.String')
                 
                 intent = Intent(Intent.ACTION_GET_CONTENT)
                 intent.setType("*/*")
@@ -520,7 +518,7 @@ class MainLayout(BoxLayout):
                 
                 bind(on_activity_result=self.on_activity_result)
                 
-                chooser_intent = Intent.createChooser(intent, String("メディアを選択"))
+                chooser_intent = Intent.createChooser(intent, "メディアを選択")
                 PythonActivity.mActivity.startActivityForResult(chooser_intent, 1001)
                 
                 self.write_log("[INFO] Native Intent ピッカーを起動しました")
@@ -567,19 +565,26 @@ class MainLayout(BoxLayout):
 
     def process_selected_files_thread(self, file_paths):
         """ファイル選択後の処理（元フォルダ直下へのPapaAlbum生成・画像圧縮・Exif継承・動画AV1圧縮）"""
-        Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
-        
-        img_count = 0
-        video_count = 0
-        total_files = len(file_paths)
-        
-        dcim_dir = "/storage/emulated/0/DCIM"
-        pictures_dir = "/storage/emulated/0/Pictures"
-        download_dir = "/storage/emulated/0/Download"
-        
-        cache_dir = App.get_running_app().user_data_dir
+        if platform == "android":
+            try:
+                from jnius import attach_thread
+                attach_thread()
+            except Exception as e:
+                print(f"[WARNING] attach_thread 失敗: {e}")
 
         try:
+            Clock.schedule_once(lambda dt: self._prepare_processing_ui(len(file_paths)))
+            
+            img_count = 0
+            video_count = 0
+            total_files = len(file_paths)
+            
+            dcim_dir = "/storage/emulated/0/DCIM"
+            pictures_dir = "/storage/emulated/0/Pictures"
+            download_dir = "/storage/emulated/0/Download"
+            
+            cache_dir = App.get_running_app().user_data_dir
+
             for index, raw_input_path in enumerate(file_paths, start=1):
                 Clock.schedule_once(
                     lambda dt, idx=index: self.update_status(f"パパ頑張り中... ({idx} / {total_files})\n※完了までアプリを開いたままにしてください")
@@ -595,7 +600,6 @@ class MainLayout(BoxLayout):
                     continue
 
                 try:
-                    # 元ファイルのフォルダが存在すればその直下に PapaAlbum を作成。取得不可時のフォールバック処理も用意。
                     if original_parent_dir and os.path.exists(original_parent_dir):
                         target_out_dir = os.path.join(original_parent_dir, "PapaAlbum")
                     elif os.path.exists(dcim_dir):
@@ -617,7 +621,7 @@ class MainLayout(BoxLayout):
                     except Exception:
                         fallback_mtime = time.time()
                     
-                    # --- 画像圧縮 & Exif（全メタデータ・GPS位置情報等）継承 ---
+                    # --- 画像圧縮 & Exif 継承 ---
                     if ext in [".jpg", ".jpeg", ".png", ".webp"]:
                         self.write_log(f"[PROCESSING] 画像圧縮中 ({pathlib.Path(output_path).name})")
                         
@@ -652,7 +656,7 @@ class MainLayout(BoxLayout):
                         img_count += 1
                         self.write_log(f"[SUCCESS] 保存完了: {output_path}")
                         
-                    # --- 動画処理 (AV1圧縮 or 直接コピー) ---
+                    # --- 動画処理 (AV1圧縮 or コピー) ---
                     elif ext in [".mp4", ".mov", ".m4v"]:
                         self.write_log(f"[PROCESSING] AV1動画圧縮中: {pathlib.Path(output_path).name}")
                         try:
@@ -682,6 +686,13 @@ class MainLayout(BoxLayout):
                         except Exception:
                             pass
         finally:
+            if platform == "android":
+                try:
+                    from jnius import detach_thread
+                    detach_thread()
+                except Exception:
+                    pass
+
             total = img_count + video_count
             if total > 0:
                 result_text = f"スッキリ完了！\n画像 {img_count}枚 / 動画 {video_count}本 を整理しました！\n元のフォルダ内の PapaAlbum に保存されました。"
@@ -708,6 +719,13 @@ class MainLayout(BoxLayout):
 class PapaAlbumApp(App):
     def build(self):
         return MainLayout()
+
+    def on_pause(self):
+        # ピッカー表示中にアプリプロセスが破棄・中断されるのを防止
+        return True
+
+    def on_resume(self):
+        pass
 
     def on_start(self):
         load_native_libraries()
